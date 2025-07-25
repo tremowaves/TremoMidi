@@ -2,11 +2,9 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'dart:typed_data';
-import 'dart:math';
+
 import 'package:dart_melty_soundfont/dart_melty_soundfont.dart';
 import 'package:file_saver/file_saver.dart';
-import 'package:flutter_pcm_sound/flutter_pcm_sound.dart';
 
 // Main App Entry Point
 void main() {
@@ -60,25 +58,19 @@ class _MIDIGeneratorHomeState extends State<MIDIGeneratorHome>
   late final TextEditingController _textController;
   final ScrollController _logController = ScrollController();
 
-  List<String> _logs = [];
+  final List<String> _logs = [];
   bool _isGenerating = false;
-  bool _isPlaying = false;
   bool _soundFontLoaded = false;
 
-  late final AnimationController _playButtonController;
   late final AnimationController _generateButtonController;
 
   // Audio Engine
   late SynthesizerSettings _synthesizerSettings;
   Synthesizer? _synthesizer;
-  MidiFileSequencer? _sequencer;
 
   // MIDI Data
   MIDIData? _currentMidiData;
   Uint8List? _midiBytes;
-
-  // Audio Player
-  Timer? _audioLoop;
 
   @override
   void initState() {
@@ -86,16 +78,6 @@ class _MIDIGeneratorHomeState extends State<MIDIGeneratorHome>
 
     _textController = TextEditingController();
 
-    FlutterPcmSound.init(
-      sampleRate: 44100,
-      channel: PcmChannel.stereo,
-      bitDepth: PcmBitDepth.int16,
-    );
-
-    _playButtonController = AnimationController(
-      duration: const Duration(milliseconds: 200),
-      vsync: this,
-    );
     _generateButtonController = AnimationController(
       duration: const Duration(milliseconds: 150),
       vsync: this,
@@ -121,12 +103,9 @@ G4 100 2.0''';
 
   @override
   void dispose() {
-    _playButtonController.dispose();
     _generateButtonController.dispose();
     _textController.dispose();
     _logController.dispose();
-    _audioLoop?.cancel();
-    FlutterPcmSound.release();
     super.dispose();
   }
 
@@ -232,87 +211,6 @@ G4 100 2.0''';
     }
   }
 
-  Future<void> _togglePlayback() async {
-    if (_synthesizer == null || _midiBytes == null) {
-      _addLog('Please load SoundFont and generate MIDI first.');
-      return;
-    }
-
-    if (_isPlaying) {
-      _stopPlayback();
-    } else {
-      _startPlayback();
-    }
-  }
-
-  void _startPlayback() {
-    if (_synthesizer == null || _midiBytes == null || !mounted) return;
-
-    setState(() => _isPlaying = true);
-    _playButtonController.forward();
-    _addLog('Starting playback...');
-
-    _sequencer = MidiFileSequencer(_synthesizer!);
-    final byteData = _midiBytes!.buffer.asByteData(_midiBytes!.offsetInBytes, _midiBytes!.lengthInBytes);
-    final midiFile = MidiFile.fromByteData(byteData);
-    _sequencer!.play(midiFile, loop: false);
-
-    FlutterPcmSound.play();
-
-    final left = Float32List(_synthesizerSettings.blockSize);
-    final right = Float32List(_synthesizerSettings.blockSize);
-    final interleaved = Int16List(_synthesizerSettings.blockSize * 2);
-
-    _audioLoop = Timer.periodic(const Duration(milliseconds: 1), (timer) {
-      if (!_isPlaying) {
-        timer.cancel();
-        return;
-      }
-      _synthesizer!.render(left, right);
-      for (var i = 0; i < _synthesizerSettings.blockSize; i++) {
-        interleaved[i * 2] = (left[i] * 32767).toInt();
-        interleaved[i * 2 + 1] = (right[i] * 32767).toInt();
-      }
-      FlutterPcmSound.feed(PcmArrayInt16.fromInt16List(interleaved));
-    });
-
-    final duration = _calculatePlaybackDuration(_currentMidiData!);
-    Future.delayed(Duration(milliseconds: duration), () {
-      if (mounted && _isPlaying) {
-        _stopPlayback(isFinished: true);
-      }
-    });
-  }
-
-  void _stopPlayback({bool isFinished = false}) {
-    if (!mounted) return;
-    _audioLoop?.cancel();
-    FlutterPcmSound.stop();
-    _sequencer?.stop();
-    setState(() => _isPlaying = false);
-    _playButtonController.reverse();
-    if (isFinished) {
-      _addLog('Playback finished.');
-    } else {
-      _addLog('Playback stopped by user.');
-    }
-  }
-
-  int _calculatePlaybackDuration(MIDIData midiData) {
-    double totalDurationSeconds = 0;
-    for (final track in midiData.tracks) {
-      double trackDuration = 0;
-      for (final note in track.notes) {
-        trackDuration += note.duration;
-      }
-      if (trackDuration > totalDurationSeconds) {
-        totalDurationSeconds = trackDuration;
-      }
-    }
-    // Add a small buffer
-    return (totalDurationSeconds * 1000).toInt() + 500;
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -396,16 +294,6 @@ G4 100 2.0''';
                                     ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
                                     : const Icon(CupertinoIcons.waveform),
                                 label: Text(_isGenerating ? 'Generating...' : 'Generate MIDI'),
-                              ),
-                              const SizedBox(width: 12),
-                              FilledButton.icon(
-                                onPressed: _togglePlayback,
-                                style: FilledButton.styleFrom(
-                                  backgroundColor: _isPlaying ? colorScheme.error : colorScheme.primary,
-                                  foregroundColor: _isPlaying ? colorScheme.onError : colorScheme.onPrimary,
-                                ),
-                                icon: Icon(_isPlaying ? CupertinoIcons.stop_fill : CupertinoIcons.play_fill),
-                                label: Text(_isPlaying ? 'Stop' : 'Play'),
                               ),
                               const SizedBox(width: 12),
                               FilledButton.tonalIcon(
@@ -671,7 +559,7 @@ class MidiWriter {
 
 class MidiTrackWriter {
   final List<_MidiEvent> _events = [];
-  int _lastTicks = 0;
+  final int _lastTicks = 0;
 
   void addTempo(int tempo) {
     final microsecondsPerBeat = 60000000 ~/ tempo;
@@ -738,25 +626,3 @@ class _MidiEvent {
   final List<int> data;
   _MidiEvent(this.ticks, this.status, this.data);
 }
-</final_file_content>
-
-IMPORTANT: For any future changes to this file, use the final_file_content shown above as your reference. This content reflects the current state of the file, including any auto-formatting (e.g., if you used single quotes but the formatter converted them to double quotes). Always base your SEARCH/REPLACE operations on this final version to ensure accuracy.
-
-<environment_details>
-# VSCode Visible Files
-tremomidi/lib/main.dart
-
-# VSCode Open Tabs
-.gitignore
-tremomidi/lib/main.dart
-tremomidi/assets/TremoSoundFont.sf2
-
-# Current Time
-7/25/2025, 4:58:13 PM (Asia/Bangkok, UTC+7:00)
-
-# Context Window Usage
-190,784 / 1,048.576K tokens used (18%)
-
-# Current Mode
-ACT MODE
-</environment_details>
