@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -73,6 +74,7 @@ class _MIDIGeneratorHomeState extends State<MIDIGeneratorHome>
   Synthesizer? _synthesizer;
   final AudioPlayer _audioPlayer = AudioPlayer();
   Timer? _audioTimer;
+  final List<Int16List> _audioBuffer = [];
 
   // MIDI Data
   MIDIData? _currentMidiData;
@@ -181,6 +183,7 @@ G4 100 2.0''';
     
     // Initialize audio player for real-time playback
     try {
+      _audioBuffer.clear();
       _addLog('Audio stream initialized with audioplayers');
     } catch (e) {
       _addLog('Error initializing audio stream: $e');
@@ -287,17 +290,27 @@ G4 100 2.0''';
     
     // Start audio playback with synthesizer
     try {
+      // Generate audio file for playback
+      await _generateAudioFile();
+      
+      // Play the generated audio file
+      await _audioPlayer.play(DeviceFileSource('temp_audio.wav'));
+      _addLog('Audio playback started');
+      
       // Set up audio timer to generate samples
       _audioTimer = Timer.periodic(const Duration(milliseconds: 10), (timer) {
         if (_synthesizer != null && _isPlaying) {
           // Create PCM buffer for audio output
           final buffer = ArrayInt16.zeros(numShorts: 512);
           _synthesizer!.renderMonoInt16(buffer);
-          // Note: In a real implementation, you would send these samples to audio output
-          // For now, we'll just log that audio is being generated
+          // Store samples for continuous playback
+          final samples = Int16List(512);
+          for (int i = 0; i < 512; i++) {
+            samples[i] = buffer[i];
+          }
+          _audioBuffer.add(samples);
         }
       });
-      _addLog('Audio playback started');
     } catch (e) {
       _addLog('Error starting audio playback: $e');
       _stopPlayback();
@@ -375,6 +388,106 @@ G4 100 2.0''';
     final octave = (pitch ~/ 12) - 1;
     final noteName = noteNames[pitch % 12];
     return '$noteName$octave';
+  }
+
+  Future<void> _generateAudioFile() async {
+    if (_synthesizer == null || _currentMidiData == null) return;
+    
+    try {
+      // Calculate total duration
+      double totalDuration = 0;
+      for (final track in _currentMidiData!.tracks) {
+        double trackDuration = 0;
+        for (final note in track.notes) {
+          trackDuration += note.duration;
+        }
+        if (trackDuration > totalDuration) {
+          totalDuration = trackDuration;
+        }
+      }
+      
+      // Generate audio for the entire duration
+      final sampleRate = 44100;
+      final totalSamples = (totalDuration * sampleRate).round();
+      final buffer = ArrayInt16.zeros(numShorts: totalSamples);
+      
+      // Set up instruments
+      for (int i = 0; i < _currentMidiData!.tracks.length; i++) {
+        final track = _currentMidiData!.tracks[i];
+        _synthesizer!.selectPreset(channel: i, preset: track.program);
+      }
+      
+      // Play all notes
+      for (int trackIndex = 0; trackIndex < _currentMidiData!.tracks.length; trackIndex++) {
+        final track = _currentMidiData!.tracks[trackIndex];
+        
+        for (final note in track.notes) {
+          // Note On
+          _synthesizer!.noteOn(
+            channel: trackIndex,
+            key: note.pitch,
+            velocity: note.velocity,
+          );
+          
+          // Note Off after duration
+          Future.delayed(Duration(milliseconds: (note.duration * 1000).round()), () {
+            if (_synthesizer != null) {
+              _synthesizer!.noteOff(
+                channel: trackIndex,
+                key: note.pitch,
+              );
+            }
+          });
+        }
+      }
+      
+      // Render audio
+      _synthesizer!.renderMonoInt16(buffer);
+      
+      // Save to WAV file
+      final file = File('temp_audio.wav');
+      await file.writeAsBytes(_createWavHeader(sampleRate, totalSamples) + 
+                             _arrayInt16ToBytes(buffer, totalSamples));
+      
+      _addLog('Generated audio file: ${file.lengthSync()} bytes');
+    } catch (e) {
+      _addLog('Error generating audio file: $e');
+    }
+  }
+
+  List<int> _createWavHeader(int sampleRate, int numSamples) {
+    final header = <int>[];
+    
+    // RIFF header
+    header.addAll('RIFF'.codeUnits);
+    header.addAll([36 + numSamples * 2, 0, 0, 0]); // File size
+    header.addAll('WAVE'.codeUnits);
+    
+    // fmt chunk
+    header.addAll('fmt '.codeUnits);
+    header.addAll([16, 0, 0, 0]); // Chunk size
+    header.addAll([1, 0]); // Audio format (PCM)
+    header.addAll([1, 0]); // Channels (mono)
+    header.addAll([sampleRate & 0xFF, (sampleRate >> 8) & 0xFF, (sampleRate >> 16) & 0xFF, (sampleRate >> 24) & 0xFF]); // Sample rate
+    header.addAll([sampleRate * 2 & 0xFF, (sampleRate * 2 >> 8) & 0xFF, (sampleRate * 2 >> 16) & 0xFF, (sampleRate * 2 >> 24) & 0xFF]); // Byte rate
+    header.addAll([2, 0]); // Block align
+    header.addAll([16, 0]); // Bits per sample
+    
+    // data chunk
+    header.addAll('data'.codeUnits);
+    header.addAll([numSamples * 2 & 0xFF, (numSamples * 2 >> 8) & 0xFF, (numSamples * 2 >> 16) & 0xFF, (numSamples * 2 >> 24) & 0xFF]); // Data size
+    
+    return header;
+  }
+
+  List<int> _arrayInt16ToBytes(ArrayInt16 array, int length) {
+    final bytes = <int>[];
+    for (int i = 0; i < length; i++) {
+      final value = array[i];
+      bytes.add(value & 0xFF);
+      bytes.add((value >> 8) & 0xFF);
+    }
+    return bytes;
   }
 
   Future<void> _saveMIDI() async {
