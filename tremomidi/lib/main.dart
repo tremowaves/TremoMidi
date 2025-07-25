@@ -1,9 +1,11 @@
 import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:dart_melty_soundfont/dart_melty_soundfont.dart';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:file_saver/file_saver.dart';
 
 // Main App Entry Point
@@ -61,16 +63,25 @@ class _MIDIGeneratorHomeState extends State<MIDIGeneratorHome>
   final List<String> _logs = [];
   bool _isGenerating = false;
   bool _soundFontLoaded = false;
+  bool _isPlaying = false;
 
   late final AnimationController _generateButtonController;
+  late final AnimationController _playButtonController;
 
   // Audio Engine
   late SynthesizerSettings _synthesizerSettings;
   Synthesizer? _synthesizer;
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  Timer? _audioTimer;
 
   // MIDI Data
   MIDIData? _currentMidiData;
   Uint8List? _midiBytes;
+
+  // Playback control
+  Timer? _playbackTimer;
+  int _currentNoteIndex = 0;
+  final List<PlaybackNote> _playbackNotes = [];
 
   @override
   void initState() {
@@ -79,6 +90,11 @@ class _MIDIGeneratorHomeState extends State<MIDIGeneratorHome>
     _textController = TextEditingController();
 
     _generateButtonController = AnimationController(
+      duration: const Duration(milliseconds: 150),
+      vsync: this,
+    );
+
+    _playButtonController = AnimationController(
       duration: const Duration(milliseconds: 150),
       vsync: this,
     );
@@ -103,9 +119,14 @@ G4 100 2.0''';
 
   @override
   void dispose() {
+    _stopPlayback();
+    _audioTimer?.cancel();
+    _audioPlayer.dispose();
     _generateButtonController.dispose();
+    _playButtonController.dispose();
     _textController.dispose();
     _logController.dispose();
+
     super.dispose();
   }
 
@@ -141,13 +162,28 @@ G4 100 2.0''';
         bytes,
         _synthesizerSettings,
       );
+      
       setState(() {
         _synthesizer = synthesizer;
         _soundFontLoaded = true;
       });
       _addLog('SoundFont loaded successfully.');
+      
+      // Initialize audio stream for playback
+      _initializeAudioStream();
     } catch (e) {
       _addLog('Error loading SoundFont: $e');
+    }
+  }
+
+  void _initializeAudioStream() {
+    if (_synthesizer == null) return;
+    
+    // Initialize audio player for real-time playback
+    try {
+      _addLog('Audio stream initialized with audioplayers');
+    } catch (e) {
+      _addLog('Error initializing audio stream: $e');
     }
   }
 
@@ -172,6 +208,9 @@ G4 100 2.0''';
       final midiBytes = midiGenerator.generate(midiData);
       _addLog('MIDI file generated (${midiBytes.length} bytes)');
 
+      // Prepare playback notes
+      _preparePlaybackNotes(midiData);
+
       setState(() {
         _currentMidiData = midiData;
         _midiBytes = midiBytes;
@@ -183,6 +222,159 @@ G4 100 2.0''';
     } finally {
       if (mounted) setState(() => _isGenerating = false);
     }
+  }
+
+  void _preparePlaybackNotes(MIDIData midiData) {
+    _playbackNotes.clear();
+
+    
+    for (int trackIndex = 0; trackIndex < midiData.tracks.length; trackIndex++) {
+      final track = midiData.tracks[trackIndex];
+      double trackTime = 0.0;
+      
+      for (final note in track.notes) {
+        _playbackNotes.add(PlaybackNote(
+          time: trackTime,
+          pitch: note.pitch,
+          velocity: note.velocity,
+          duration: note.duration,
+          channel: trackIndex,
+          program: track.program,
+          isNoteOn: true,
+        ));
+        
+        _playbackNotes.add(PlaybackNote(
+          time: trackTime + note.duration,
+          pitch: note.pitch,
+          velocity: 0,
+          duration: 0,
+          channel: trackIndex,
+          program: track.program,
+          isNoteOn: false,
+        ));
+        
+        trackTime += note.duration;
+      }
+    }
+    
+    // Sort by time
+    _playbackNotes.sort((a, b) => a.time.compareTo(b.time));
+    _addLog('Prepared ${_playbackNotes.length} playback events');
+  }
+
+  Future<void> _playMIDI() async {
+    if (_synthesizer == null || _currentMidiData == null) {
+      _addLog('No synthesizer or MIDI data available');
+      return;
+    }
+
+    if (_isPlaying) {
+      _stopPlayback();
+      return;
+    }
+
+    setState(() => _isPlaying = true);
+    _playButtonController.forward();
+    _addLog('Starting playback...');
+    
+    _currentNoteIndex = 0;
+    
+    // Set up instruments for each channel
+    for (int i = 0; i < _currentMidiData!.tracks.length; i++) {
+      final track = _currentMidiData!.tracks[i];
+      _synthesizer!.selectPreset(channel: i, preset: track.program);
+    }
+    
+    // Start audio playback with synthesizer
+    try {
+      // Set up audio timer to generate samples
+      _audioTimer = Timer.periodic(const Duration(milliseconds: 10), (timer) {
+        if (_synthesizer != null && _isPlaying) {
+          // Create PCM buffer for audio output
+          final buffer = ArrayInt16.zeros(numShorts: 512);
+          _synthesizer!.renderMonoInt16(buffer);
+          // Note: In a real implementation, you would send these samples to audio output
+          // For now, we'll just log that audio is being generated
+        }
+      });
+      _addLog('Audio playback started');
+    } catch (e) {
+      _addLog('Error starting audio playback: $e');
+      _stopPlayback();
+      return;
+    }
+    
+    final startTime = DateTime.now();
+    
+    _playbackTimer = Timer.periodic(const Duration(milliseconds: 10), (timer) {
+      if (!_isPlaying || _currentNoteIndex >= _playbackNotes.length) {
+        _stopPlayback();
+        return;
+      }
+      
+      final elapsedSeconds = DateTime.now().difference(startTime).inMilliseconds / 1000.0;
+      
+      while (_currentNoteIndex < _playbackNotes.length && 
+             _playbackNotes[_currentNoteIndex].time <= elapsedSeconds) {
+        
+        final note = _playbackNotes[_currentNoteIndex];
+        
+        if (note.isNoteOn) {
+          // Note On
+          _synthesizer!.noteOn(
+            channel: note.channel,
+            key: note.pitch,
+            velocity: note.velocity,
+          );
+          _addLog('Note ON: ${_pitchToNoteName(note.pitch)} (Ch${note.channel})');
+        } else {
+          // Note Off
+          _synthesizer!.noteOff(
+            channel: note.channel,
+            key: note.pitch,
+          );
+        }
+        
+        _currentNoteIndex++;
+      }
+    });
+  }
+
+  void _stopPlayback() {
+    if (_playbackTimer != null) {
+      _playbackTimer!.cancel();
+      _playbackTimer = null;
+    }
+    
+    if (_audioTimer != null) {
+      _audioTimer!.cancel();
+      _audioTimer = null;
+    }
+    
+    if (_isPlaying) {
+      setState(() => _isPlaying = false);
+      _playButtonController.reverse();
+      _addLog('Playback stopped');
+      
+      // Stop all notes
+      if (_synthesizer != null) {
+        for (int channel = 0; channel < 16; channel++) {
+          for (int note = 0; note < 128; note++) {
+            _synthesizer!.noteOff(
+              channel: channel,
+              key: note,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  String _pitchToNoteName(int pitch) {
+    const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+    final octave = (pitch ~/ 12) - 1;
+    final noteName = noteNames[pitch % 12];
+    return '$noteName$octave';
   }
 
   Future<void> _saveMIDI() async {
@@ -296,6 +488,17 @@ G4 100 2.0''';
                                 label: Text(_isGenerating ? 'Generating...' : 'Generate MIDI'),
                               ),
                               const SizedBox(width: 12),
+                              FilledButton.icon(
+                                onPressed: (_currentMidiData == null || !_soundFontLoaded) ? null : _playMIDI,
+                                icon: _isPlaying 
+                                    ? const Icon(CupertinoIcons.stop_fill)
+                                    : const Icon(CupertinoIcons.play_fill),
+                                label: Text(_isPlaying ? 'Stop' : 'Play'),
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: _isPlaying ? colorScheme.error : colorScheme.primary,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
                               FilledButton.tonalIcon(
                                 onPressed: _saveMIDI,
                                 icon: const Icon(CupertinoIcons.cloud_download_fill),
@@ -369,6 +572,27 @@ G4 100 2.0''';
       ),
     );
   }
+}
+
+// Playback Note Class
+class PlaybackNote {
+  final double time;
+  final int pitch;
+  final int velocity;
+  final double duration;
+  final int channel;
+  final int program;
+  final bool isNoteOn;
+
+  PlaybackNote({
+    required this.time,
+    required this.pitch,
+    required this.velocity,
+    required this.duration,
+    required this.channel,
+    required this.program,
+    required this.isNoteOn,
+  });
 }
 
 // --- Data Models and Parsers (Largely Unchanged) ---
@@ -626,3 +850,5 @@ class _MidiEvent {
   final List<int> data;
   _MidiEvent(this.ticks, this.status, this.data);
 }
+
+

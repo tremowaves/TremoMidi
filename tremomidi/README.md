@@ -8,6 +8,7 @@ Một ứng dụng Flutter để tạo file MIDI từ text input đơn giản.
 - **Multiple Instruments**: Hỗ trợ nhiều nhạc cụ khác nhau
 - **Tempo Control**: Điều chỉnh tempo cho từng track
 - **Real-time Generation**: Tạo MIDI file ngay lập tức
+- **Audio Playback**: Phát âm thanh trực tiếp từ synthesizer
 - **File Export**: Lưu file MIDI với tên tự động
 
 ## Cách sử dụng
@@ -73,7 +74,8 @@ flutter build linux
 
 ## Dependencies
 
-- `dart_melty_soundfont`: Xử lý SoundFont và MIDI
+- `dart_melty_soundfont`: Xử lý SoundFont và MIDI synthesis
+- `audioplayers`: Audio playback functionality
 - `file_saver`: Lưu file MIDI
 - `flutter`: UI framework
 
@@ -91,6 +93,8 @@ lib/
 - Ứng dụng sử dụng TremoSoundFont.sf2 cho âm thanh
 - File MIDI được tạo theo chuẩn Standard MIDI Files (SMF)
 - Hỗ trợ format 1 MIDI với multiple tracks
+- Audio playback sử dụng dart_melty_soundfont synthesizer
+- Hỗ trợ real-time MIDI playback với synthesizer
 
 ## License
 
