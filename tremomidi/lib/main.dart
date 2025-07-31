@@ -177,9 +177,48 @@ class MIDIToTextConverter {
       buffer.writeln('instrument: ${track.instrument}');
       buffer.writeln();
       
+      // Group notes by start time to create chords
+      final noteGroups = <double, List<MIDINote>>{};
+      double currentTime = 0;
+      
       for (final note in track.notes) {
-        final noteName = _pitchToNoteName(note.pitch);
-        buffer.writeln('$noteName ${note.velocity} ${note.duration.toStringAsFixed(2)}');
+        noteGroups.putIfAbsent(currentTime, () => []);
+        noteGroups[currentTime]!.add(note);
+        currentTime += note.duration;
+      }
+      
+      // Output grouped notes as chords or single notes
+      for (final entry in noteGroups.entries) {
+        final notes = entry.value;
+        if (notes.length == 1) {
+          // Single note
+          final note = notes.first;
+          final noteName = _pitchToNoteName(note.pitch);
+          buffer.writeln('$noteName ${note.velocity} ${note.duration.toStringAsFixed(2)}');
+        } else {
+          // Chord - group notes with same velocity and duration
+          final velocityGroups = <int, List<MIDINote>>{};
+          for (final note in notes) {
+            velocityGroups.putIfAbsent(note.velocity, () => []);
+            velocityGroups[note.velocity]!.add(note);
+          }
+          
+          for (final velocityEntry in velocityGroups.entries) {
+            final chordNotes = velocityEntry.value;
+            final durationGroups = <double, List<MIDINote>>{};
+            for (final note in chordNotes) {
+              durationGroups.putIfAbsent(note.duration, () => []);
+              durationGroups[note.duration]!.add(note);
+            }
+            
+            for (final durationEntry in durationGroups.entries) {
+              final finalChordNotes = durationEntry.value;
+              final noteNames = finalChordNotes.map((n) => _pitchToNoteName(n.pitch)).toList();
+              final chordString = noteNames.join('+');
+              buffer.writeln('$chordString ${velocityEntry.key} ${durationEntry.key.toStringAsFixed(2)}');
+            }
+          }
+        }
       }
       
       if (i < midiData.tracks.length - 1) {
@@ -499,20 +538,118 @@ class _MIDIGeneratorHomeState extends State<MIDIGeneratorHome>
       vsync: this,
     );
 
-    _textController.text = '''tempo: 120
+    _textController.text = '''tempo: 140
 instrument: Acoustic Grand Piano
 
+# C Minor Scale Melody with Overlapping Notes
 C4 100 0.5
 D4 100 0.5
-E4 100 0.5
+Eb4 100 0.5
 F4 100 0.5
-G4 100 1.0
-G4 100 1.0
-A4 100 0.5
-A4 100 0.5
-A4 100 0.5
-A4 100 0.5
-G4 100 2.0''';
+G4 100 0.5
+Ab4 100 0.5
+Bb4 100 0.5
+C5 100 1.0
+
+# Overlapping melody notes (layering)
+C4 80 1.0
+D4 80 1.0
+Eb4 80 1.0
+F4 80 1.0
+
+# Chord progression in C minor
+C4+Eb4+G4 90 1.0
+D4+F4+Ab4 90 1.0
+Eb4+G4+Bb4 90 1.0
+F4+Ab4+C5 90 1.0
+G4+Bb4+D5 90 1.0
+Ab4+C5+Eb5 90 1.0
+Bb4+D5+F5 90 1.0
+C5+Eb5+G5 90 1.0
+
+instrument: Acoustic Guitar (nylon)
+
+# Guitar melody in C minor
+C3 85 0.75
+D3 85 0.75
+Eb3 85 0.75
+F3 85 0.75
+G3 85 0.75
+Ab3 85 0.75
+Bb3 85 0.75
+C4 85 1.5
+
+# Guitar chords with bass notes
+C3+Eb3+G3 80 1.0
+D3+F3+Ab3 80 1.0
+Eb3+G3+Bb3 80 1.0
+F3+Ab3+C4 80 1.0
+
+instrument: Violin
+
+# Violin melody with overlapping notes
+C5 95 0.5
+D5 95 0.5
+Eb5 95 0.5
+F5 95 0.5
+G5 95 0.5
+Ab5 95 0.5
+Bb5 95 0.5
+C6 95 1.0
+
+# Violin harmony notes (overlapping)
+E5 85 1.0
+F5 85 1.0
+G5 85 1.0
+Ab5 85 1.0
+
+instrument: Trumpet
+
+# Trumpet melody in C minor
+C4 100 0.5
+D4 100 0.5
+Eb4 100 0.5
+F4 100 0.5
+G4 100 0.5
+Ab4 100 0.5
+Bb4 100 0.5
+C5 100 1.0
+
+# Trumpet chord stabs
+C4+Eb4+G4 110 0.25
+D4+F4+Ab4 110 0.25
+Eb4+G4+Bb4 110 0.25
+F4+Ab4+C5 110 0.25
+
+instrument: Flute
+
+# Flute melody with overlapping notes
+C6 90 0.75
+D6 90 0.75
+Eb6 90 0.75
+F6 90 0.75
+G6 90 0.75
+Ab6 90 0.75
+Bb6 90 0.75
+C7 90 1.5
+
+# Flute harmony (overlapping)
+E6 80 1.0
+F6 80 1.0
+G6 80 1.0
+Ab6 80 1.0
+
+instrument: Acoustic Grand Piano
+
+# Final chord progression with all instruments
+C4+Eb4+G4+C5 95 2.0
+D4+F4+Ab4+D5 95 2.0
+Eb4+G4+Bb4+Eb5 95 2.0
+F4+Ab4+C5+F5 95 2.0
+G4+Bb4+D5+G5 95 2.0
+Ab4+C5+Eb5+Ab5 95 2.0
+Bb4+D5+F5+Bb5 95 2.0
+C5+Eb5+G5+C6 95 3.0''';
 
     _loadSoundFont();
   }
@@ -760,13 +897,21 @@ G4 100 2.0''';
     if (_synthesizer == null || _currentMidiData == null) return;
     
     try {
-      // --- CORRECTED DURATION CALCULATION ---
+      // Use the actual tempo from MIDI data
+      final actualTempo = _currentMidiData!.tempo;
+      _addLog('Using tempo: $actualTempo BPM');
+      
+      // Calculate duration using the actual tempo
       double totalDuration = 0;
-      _preparePlaybackNotes(_currentMidiData!); // Use the timeline we already built!
-      if (_playbackNotes.isNotEmpty) {
-        // The total duration is the time of the very last event.
-        totalDuration = _playbackNotes.last.time + 0.5; // Add a little tail
+      for (final track in _currentMidiData!.tracks) {
+        double trackDuration = track.notes.fold(0.0, (sum, note) => sum + note.duration);
+        if (trackDuration > totalDuration) {
+          totalDuration = trackDuration;
+        }
       }
+      
+      // Add some tail time
+      totalDuration += 1.0;
       
       if (totalDuration <= 0) {
         _addLog('Error: No notes to play, duration is zero.');
@@ -1228,6 +1373,47 @@ class MIDINote {
   MIDINote({required this.pitch, required this.velocity, required this.duration});
 }
 
+// Helper class to represent either a single note or a chord
+class ChordOrNote {
+  final List<int> pitches;
+  final int velocity;
+  final double duration;
+  
+  ChordOrNote({
+    required this.pitches,
+    required this.velocity,
+    required this.duration,
+  });
+  
+  bool get isChord => pitches.length > 1;
+  
+  @override
+  String toString() {
+    if (isChord) {
+      return pitches.map((p) => _pitchToNoteName(p)).join('+');
+    } else {
+      return _pitchToNoteName(pitches.first);
+    }
+  }
+  
+  static String _pitchToNoteName(int pitch) {
+    const noteNames = {
+      0: 'C-1', 1: 'C#-1', 2: 'D-1', 3: 'D#-1', 4: 'E-1', 5: 'F-1', 6: 'F#-1', 7: 'G-1', 8: 'G#-1', 9: 'A-1', 10: 'A#-1', 11: 'B-1',
+      12: 'C0', 13: 'C#0', 14: 'D0', 15: 'D#0', 16: 'E0', 17: 'F0', 18: 'F#0', 19: 'G0', 20: 'G#0', 21: 'A0', 22: 'A#0', 23: 'B0',
+      24: 'C1', 25: 'C#1', 26: 'D1', 27: 'D#1', 28: 'E1', 29: 'F1', 30: 'F#1', 31: 'G1', 32: 'G#1', 33: 'A1', 34: 'A#1', 35: 'B1',
+      36: 'C2', 37: 'C#2', 38: 'D2', 39: 'D#2', 40: 'E2', 41: 'F2', 42: 'F#2', 43: 'G2', 44: 'G#2', 45: 'A2', 46: 'A#2', 47: 'B2',
+      48: 'C3', 49: 'C#3', 50: 'D3', 51: 'D#3', 52: 'E3', 53: 'F3', 54: 'F#3', 55: 'G3', 56: 'G#3', 57: 'A3', 58: 'A#3', 59: 'B3',
+      60: 'C4', 61: 'C#4', 62: 'D4', 63: 'D#4', 64: 'E4', 65: 'F4', 66: 'F#4', 67: 'G4', 68: 'G#4', 69: 'A4', 70: 'A#4', 71: 'B4',
+      72: 'C5', 73: 'C#5', 74: 'D5', 75: 'D#5', 76: 'E5', 77: 'F5', 78: 'F#5', 79: 'G5', 80: 'G#5', 81: 'A5', 82: 'A#5', 83: 'B5',
+      84: 'C6', 85: 'C#6', 86: 'D6', 87: 'D#6', 88: 'E6', 89: 'F6', 90: 'F#6', 91: 'G6', 92: 'G#6', 93: 'A6', 94: 'A#6', 95: 'B6',
+      96: 'C7', 97: 'C#7', 98: 'D7', 99: 'D#7', 100: 'E7', 101: 'F7', 102: 'F#7', 103: 'G7', 104: 'G#7', 105: 'A7', 106: 'A#7', 107: 'B7',
+      108: 'C8', 109: 'C#8', 110: 'D8', 111: 'D#8', 112: 'E8', 113: 'F8', 114: 'F#8', 115: 'G8', 116: 'G#8', 117: 'A8', 118: 'A#8', 119: 'B8',
+      120: 'C9', 121: 'C#9', 122: 'D9', 123: 'D#9', 124: 'E9', 125: 'F9', 126: 'F#9', 127: 'G9'
+    };
+    return noteNames[pitch] ?? 'Unknown';
+  }
+}
+
 class MIDITextParser {
   static const Map<String, int> noteMap = {
     'C': 0, 'C#': 1, 'Db': 1, 'D': 2, 'D#': 3, 'Eb': 3, 'E': 4, 'F': 5, 'F#': 6,
@@ -1367,7 +1553,7 @@ class MIDITextParser {
   MIDIData parse(String text) {
     final lines = text.split('\n').where((line) => line.trim().isNotEmpty);
     int tempo = 120;
-    Map<String, List<MIDINote>> instrumentNotes = {};
+    Map<String, List<ChordOrNote>> instrumentNotes = {};
     String currentInstrument = 'Acoustic Grand Piano';
 
     for (final line in lines) {
@@ -1382,12 +1568,28 @@ class MIDITextParser {
         final parts = trimmed.split(RegExp(r'\s+'));
         if (parts.length >= 3) {
           try {
-            final pitch = _parseNoteName(parts[0]);
+            final notePart = parts[0];
             final velocity = int.parse(parts[1]);
-            final duration = double.parse(parts[2]);
+            final durationInBeats = double.parse(parts[2]);
+            // Convert from beats to seconds using tempo
+            final durationInSeconds = durationInBeats * (60.0 / tempo);
+            
+            // Parse chord or single note
+            List<int> pitches = [];
+            if (notePart.contains('+')) {
+              // Chord: C4+E4+G4
+              final noteNames = notePart.split('+');
+              for (final noteName in noteNames) {
+                pitches.add(_parseNoteName(noteName.trim()));
+              }
+            } else {
+              // Single note: C4
+              pitches.add(_parseNoteName(notePart));
+            }
+            
             instrumentNotes.putIfAbsent(currentInstrument, () => []);
             instrumentNotes[currentInstrument]!.add(
-              MIDINote(pitch: pitch, velocity: velocity, duration: duration),
+              ChordOrNote(pitches: pitches, velocity: velocity, duration: durationInSeconds),
             );
           } catch (e) {
             throw FormatException('Invalid note line: "$trimmed" ($e)');
@@ -1399,7 +1601,20 @@ class MIDITextParser {
     final tracks = instrumentNotes.entries.map((entry) {
       final program = instrumentMap[entry.key] ?? 0;
       print('DEBUG: Instrument "${entry.key}" -> Program $program'); // ADD THIS
-      return MIDITrack(instrument: entry.key, program: program, notes: entry.value);
+      
+      // Convert ChordOrNote to MIDINote
+      final midiNotes = <MIDINote>[];
+      for (final chordOrNote in entry.value) {
+        for (final pitch in chordOrNote.pitches) {
+          midiNotes.add(MIDINote(
+            pitch: pitch,
+            velocity: chordOrNote.velocity,
+            duration: chordOrNote.duration,
+          ));
+        }
+      }
+      
+      return MIDITrack(instrument: entry.key, program: program, notes: midiNotes);
     }).toList();
 
     return MIDIData(tempo: tempo, tracks: tracks);
@@ -1426,20 +1641,35 @@ class MIDIFileGenerator {
       writer.addTrack();
       writer.addProgramChange(channel: i, program: track.program);
       
-      int absoluteTicks = 0;
+      // Group notes by start time to handle overlapping notes (chords)
+      final noteGroups = <int, List<MIDINote>>{};
+      int currentTicks = 0;
+      
       for (final note in track.notes) {
-        // Convert duration from seconds to ticks, accounting for tempo
-        final double beatsPerSecond = midiData.tempo / 60.0;
-        final double durationInBeats = note.duration * beatsPerSecond;
-        final durationInTicks = (durationInBeats * writer.ticksPerBeat).round();
-        writer.addNote(
-          channel: i,
-          pitch: note.pitch,
-          velocity: note.velocity,
-          startTicks: absoluteTicks,
-          endTicks: absoluteTicks + durationInTicks,
-        );
-        absoluteTicks += durationInTicks;
+        noteGroups.putIfAbsent(currentTicks, () => []);
+        noteGroups[currentTicks]!.add(note);
+        currentTicks += (note.duration * midiData.tempo / 60.0 * writer.ticksPerBeat).round();
+      }
+      
+      // Add grouped notes to the writer
+      for (final entry in noteGroups.entries) {
+        final startTicks = entry.key;
+        final notes = entry.value;
+        
+        for (final note in notes) {
+          // Convert duration from seconds to ticks, accounting for tempo
+          final double beatsPerSecond = midiData.tempo / 60.0;
+          final double durationInBeats = note.duration * beatsPerSecond;
+          final durationInTicks = (durationInBeats * writer.ticksPerBeat).round();
+          
+          writer.addNote(
+            channel: i,
+            pitch: note.pitch,
+            velocity: note.velocity,
+            startTicks: startTicks,
+            endTicks: startTicks + durationInTicks,
+          );
+        }
       }
     }
     return writer.build();
