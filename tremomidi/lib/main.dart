@@ -658,6 +658,10 @@ class _MIDIGeneratorHomeState extends State<MIDIGeneratorHome>
   Timer? _audioTimer;
   final List<Int16List> _audioBuffer = [];
   String? _currentAudioFile;
+  
+  // SoundFont selection
+  String _currentSoundFontPath = 'assets/TremoSoundFont.sf2';
+  bool _isLoadingSoundFont = false;
 
   // MIDI Data
   MIDIData? _currentMidiData;
@@ -848,29 +852,56 @@ C5+Eb5+G5+C6 95 3.0''';
 
   Future<void> _loadSoundFont() async {
     _addLog('Loading SoundFont...');
+    setState(() => _isLoadingSoundFont = true);
+    
     try {
-      final bytes = await rootBundle.load('assets/TremoSoundFont.sf2');
+      ByteData bytes;
+      
+      if (_currentSoundFontPath.startsWith('assets/')) {
+        // Load from assets
+        bytes = await rootBundle.load(_currentSoundFontPath);
+      } else {
+        // Load from file system
+        final file = File(_currentSoundFontPath);
+        if (!await file.exists()) {
+          throw Exception('SoundFont file not found: $_currentSoundFontPath');
+        }
+        final fileBytes = await file.readAsBytes();
+        bytes = ByteData.view(fileBytes.buffer);
+      }
+      
       _synthesizerSettings = SynthesizerSettings(
         sampleRate: 44100,
         maximumPolyphony: 128,
         blockSize: 64,
       );
-      final synthesizer = Synthesizer.loadByteData(
-        bytes,
-        _synthesizerSettings,
-      );
+      
+      // Try to load with error handling for corrupted SoundFonts
+      Synthesizer? synthesizer;
+      try {
+        synthesizer = Synthesizer.loadByteData(bytes, _synthesizerSettings);
+      } catch (e) {
+        // If loading fails, try with more lenient settings
+        _addLog('Warning: SoundFont loading failed, trying with alternative settings...');
+        _synthesizerSettings = SynthesizerSettings(
+          sampleRate: 22050, // Lower sample rate
+          maximumPolyphony: 64, // Lower polyphony
+          blockSize: 32, // Smaller block size
+        );
+        synthesizer = Synthesizer.loadByteData(bytes, _synthesizerSettings);
+      }
       
       setState(() {
         _synthesizer = synthesizer;
         _soundFontLoaded = true;
+        _isLoadingSoundFont = false;
       });
       _addLog('SoundFont loaded successfully.');
       
-      _checkAvailablePresets(); // ADD THIS
-      
-      // Initialize audio stream for playback
+      _checkAvailablePresets();
       _initializeAudioStream();
     } catch (e) {
+      setState(() => _isLoadingSoundFont = false);
       _addLog('Error loading SoundFont: $e');
     }
   }
@@ -901,6 +932,29 @@ C5+Eb5+G5+C6 95 3.0''';
       _addLog('Audio stream initialized with audioplayers');
     } catch (e) {
       _addLog('Error initializing audio stream: $e');
+    }
+  }
+
+  Future<void> _selectSoundFont() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['sf2', 'sf3'],
+        dialogTitle: 'Select SoundFont File',
+      );
+      
+      if (result != null && result.files.isNotEmpty) {
+        final filePath = result.files.first.path!;
+        setState(() {
+          _currentSoundFontPath = filePath;
+          _soundFontLoaded = false;
+        });
+        
+        _addLog('Selected SoundFont: ${result.files.first.name}');
+        await _loadSoundFont();
+      }
+    } catch (e) {
+      _addLog('Error selecting SoundFont: $e');
     }
   }
 
@@ -1315,6 +1369,14 @@ C5+Eb5+G5+C6 95 3.0''';
               children: [
                 Text('MIDI Generator', style: theme.textTheme.titleMedium),
                 const Spacer(),
+                FilledButton.tonalIcon(
+                  onPressed: _isLoadingSoundFont ? null : _selectSoundFont,
+                  icon: _isLoadingSoundFont 
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.music_note),
+                  label: Text(_isLoadingSoundFont ? 'Loading...' : 'Change SoundFont'),
+                ),
+                const SizedBox(width: 12),
                 Chip(
                   avatar: Icon(
                     _soundFontLoaded ? Icons.check_circle : Icons.hourglass_empty,
