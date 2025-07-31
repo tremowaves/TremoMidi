@@ -398,6 +398,7 @@ class MIDIToTextConverter {
       notes.add(MIDINote(
         pitch: notePitch,
         velocity: activeNote.velocity,
+        startTime: activeNote.startTime / ticksPerBeat * (60.0/tempo),
         duration: durationInSeconds,
       ));
     }
@@ -940,28 +941,25 @@ C5+Eb5+G5+C6 95 3.0''';
       
       for (int trackIndex = 0; trackIndex < _currentMidiData!.tracks.length; trackIndex++) {
         final track = _currentMidiData!.tracks[trackIndex];
-        double trackTime = 0;
         
         for (final note in track.notes) {
-          // Note On event
+          // Note On event - use actual start time
           events.add(TimelineEvent(
-            time: trackTime,
+            time: note.startTime,
             type: EventType.noteOn,
             channel: trackIndex,
             pitch: note.pitch,
             velocity: note.velocity,
           ));
           
-          // Note Off event
+          // Note Off event - use actual start time + duration
           events.add(TimelineEvent(
-            time: trackTime + note.duration,
+            time: note.startTime + note.duration,
             type: EventType.noteOff,
             channel: trackIndex,
             pitch: note.pitch,
             velocity: 0,
           ));
-          
-          trackTime += note.duration;
         }
       }
       
@@ -1369,8 +1367,14 @@ class MIDITrack {
 class MIDINote {
   final int pitch;
   final int velocity;
+  final double startTime; // in seconds
   final double duration; // in seconds
-  MIDINote({required this.pitch, required this.velocity, required this.duration});
+  MIDINote({
+    required this.pitch, 
+    required this.velocity, 
+    required this.startTime,
+    required this.duration,
+  });
 }
 
 // Helper class to represent either a single note or a chord
@@ -1579,12 +1583,17 @@ class MIDITextParser {
             if (notePart.contains('+')) {
               // Chord: C4+E4+G4
               final noteNames = notePart.split('+');
+              print('DEBUG: Parsing chord: $notePart -> ${noteNames.length} notes');
               for (final noteName in noteNames) {
-                pitches.add(_parseNoteName(noteName.trim()));
+                final pitch = _parseNoteName(noteName.trim());
+                pitches.add(pitch);
+                print('DEBUG: Note $noteName -> pitch $pitch');
               }
             } else {
               // Single note: C4
-              pitches.add(_parseNoteName(notePart));
+              final pitch = _parseNoteName(notePart);
+              pitches.add(pitch);
+              print('DEBUG: Single note $notePart -> pitch $pitch');
             }
             
             instrumentNotes.putIfAbsent(currentInstrument, () => []);
@@ -1602,16 +1611,22 @@ class MIDITextParser {
       final program = instrumentMap[entry.key] ?? 0;
       print('DEBUG: Instrument "${entry.key}" -> Program $program'); // ADD THIS
       
-      // Convert ChordOrNote to MIDINote
+      // Convert ChordOrNote to MIDINote with proper timing
       final midiNotes = <MIDINote>[];
+      double currentTime = 0.0;
+      
       for (final chordOrNote in entry.value) {
+        // All notes in a chord start at the same time
         for (final pitch in chordOrNote.pitches) {
           midiNotes.add(MIDINote(
             pitch: pitch,
             velocity: chordOrNote.velocity,
+            startTime: currentTime,
             duration: chordOrNote.duration,
           ));
         }
+        // Move to next time position after the chord duration
+        currentTime += chordOrNote.duration;
       }
       
       return MIDITrack(instrument: entry.key, program: program, notes: midiNotes);
@@ -1643,12 +1658,15 @@ class MIDIFileGenerator {
       
       // Group notes by start time to handle overlapping notes (chords)
       final noteGroups = <int, List<MIDINote>>{};
-      int currentTicks = 0;
       
       for (final note in track.notes) {
-        noteGroups.putIfAbsent(currentTicks, () => []);
-        noteGroups[currentTicks]!.add(note);
-        currentTicks += (note.duration * midiData.tempo / 60.0 * writer.ticksPerBeat).round();
+        // Convert start time from seconds to ticks
+        final double beatsPerSecond = midiData.tempo / 60.0;
+        final double startTimeInBeats = note.startTime * beatsPerSecond;
+        final int startTicks = (startTimeInBeats * writer.ticksPerBeat).round();
+        
+        noteGroups.putIfAbsent(startTicks, () => []);
+        noteGroups[startTicks]!.add(note);
       }
       
       // Add grouped notes to the writer
