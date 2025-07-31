@@ -243,23 +243,24 @@ class MIDIToTextConverter {
         int currentProgram = 0;
         final activeNotes = <int, _ActiveNote>{};
         
-        while (offset < trackEnd) {
+        while (offset < trackEnd && offset < data.length) {
           // Read delta time
           final deltaTimeResult = _readVarInt(data, offset);
           final deltaTime = deltaTimeResult.value;
           offset = deltaTimeResult.offset;
           
-          if (offset >= trackEnd) break;
+          if (offset >= trackEnd || offset >= data.length) break;
           
           currentTime += deltaTime;
           
           final status = data[offset];
           if (status == 0xFF) {
             // Meta event
+            if (offset + 2 >= data.length) break;
             final metaType = data[offset + 1];
             final metaLength = data[offset + 2];
             
-            if (metaType == 0x51 && metaLength == 3) {
+            if (metaType == 0x51 && metaLength == 3 && offset + 5 < data.length) {
               // Tempo event
               final tempoValue = (data[offset + 3] << 16) | 
                                 (data[offset + 4] << 8) | 
@@ -270,11 +271,13 @@ class MIDIToTextConverter {
             offset += 3 + metaLength;
           } else if ((status & 0xF0) == 0xC0) {
             // Program change
+            if (offset + 1 >= data.length) break;
             currentChannel = status & 0x0F;
             currentProgram = data[offset + 1];
             offset += 2;
           } else if ((status & 0xF0) == 0x90) {
             // Note on
+            if (offset + 2 >= data.length) break;
             currentChannel = status & 0x0F;
             final note = data[offset + 1];
             final velocity = data[offset + 2];
@@ -286,30 +289,31 @@ class MIDIToTextConverter {
                 channel: currentChannel,
                 velocity: velocity,
               );
-                         } else {
-               // Note off (velocity = 0)
-               _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat);
-             }
+            } else {
+              // Note off (velocity = 0)
+              _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat);
+            }
             
-            offset += 2;
-                     } else if ((status & 0xF0) == 0x80) {
-             // Note off
-             currentChannel = status & 0x0F;
-             final note = data[offset + 1];
-             
-             _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat);
-             
-             offset += 2;
+            offset += 3;
+          } else if ((status & 0xF0) == 0x80) {
+            // Note off
+            if (offset + 2 >= data.length) break;
+            currentChannel = status & 0x0F;
+            final note = data[offset + 1];
+            
+            _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat);
+            
+            offset += 3;
           } else {
             // Skip other events
             offset += 2;
           }
         }
         
-                 // Finalize any remaining active notes
-         for (final note in activeNotes.keys.toList()) {
-           _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat);
-         }
+        // Finalize any remaining active notes
+        for (final note in activeNotes.keys.toList()) {
+          _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat);
+        }
         
         if (notes.isNotEmpty) {
           tracks.add(MIDITrack(
@@ -318,6 +322,9 @@ class MIDIToTextConverter {
             notes: notes,
           ));
         }
+        
+        // Move to next track
+        offset = trackEnd;
       } else {
         offset++;
       }
