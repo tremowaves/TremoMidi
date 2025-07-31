@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:dart_melty_soundfont/dart_melty_soundfont.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:file_saver/file_saver.dart';
+import 'package:file_picker/file_picker.dart';
 
 // Main App Entry Point
 void main() {
@@ -155,7 +156,6 @@ G4 100 2.0''';
     setState(() {
       final timestamp = DateTime.now().toString().substring(11, 19);
       _logs.add('$timestamp - $message');
-      print('$timestamp - $message');
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -569,9 +569,11 @@ G4 100 2.0''';
   Future<void> _saveMIDI() async {
     if (_midiBytes == null) {
       _addLog('No MIDI data to save. Please generate first.');
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Generate MIDI before saving!')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Generate MIDI before saving!')),
+        );
+      }
       return;
     }
 
@@ -584,12 +586,252 @@ G4 100 2.0''';
         mimeType: MimeType.other,
       );
       _addLog('Saved $fileName at $path');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Successfully saved to $path')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Successfully saved to $path')),
+        );
+      }
     } catch (e) {
       _addLog('Error saving file: $e');
     }
+  }
+
+  Future<void> _importMIDI() async {
+    try {
+      _addLog('Importing MIDI file...');
+      
+      // Use file picker to select MIDI file
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['mid', 'midi'],
+        allowMultiple: false,
+      );
+
+      if (result != null && result.files.isNotEmpty) {
+        final file = File(result.files.first.path!);
+        final bytes = await file.readAsBytes();
+        
+        _addLog('MIDI file loaded: ${file.path}');
+        _addLog('File size: ${bytes.length} bytes');
+        
+        // Convert MIDI to text
+        final text = await _convertMIDIToText(bytes);
+        
+        setState(() {
+          _textController.text = text;
+        });
+        
+        _addLog('MIDI converted to text successfully');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('MIDI imported and converted to text!')),
+          );
+        }
+      }
+    } catch (e) {
+      _addLog('Error importing MIDI: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error importing MIDI: $e')),
+        );
+      }
+    }
+  }
+
+  Future<String> _convertMIDIToText(Uint8List midiBytes) async {
+    try {
+      _addLog('Converting MIDI to text...');
+      
+      // Parse MIDI file
+      final midiData = _parseMIDIFile(midiBytes);
+      
+      // Convert to text format
+      final text = _convertMIDIDataToText(midiData);
+      
+      _addLog('Conversion completed');
+      return text;
+    } catch (e) {
+      _addLog('Error converting MIDI: $e');
+      rethrow;
+    }
+  }
+
+  MIDIData _parseMIDIFile(Uint8List bytes) {
+    // Simple MIDI parser
+    final data = bytes;
+    int offset = 0;
+    
+    // Check MIDI header
+    if (data.length < 14 || 
+        String.fromCharCodes(data.sublist(0, 4)) != 'MThd') {
+      throw FormatException('Invalid MIDI file header');
+    }
+    
+    // Skip header chunk
+    offset += 14;
+    
+    final tracks = <MIDITrack>[];
+    int tempo = 120;
+    
+    while (offset < data.length) {
+      // Check for track chunk
+      if (offset + 4 <= data.length && 
+          String.fromCharCodes(data.sublist(offset, offset + 4)) == 'MTrk') {
+        
+        final trackLength = (data[offset + 7] << 24) | 
+                           (data[offset + 6] << 16) | 
+                           (data[offset + 5] << 8) | 
+                           data[offset + 4];
+        
+        offset += 8; // Skip track header
+        final trackEnd = offset + trackLength;
+        
+        final notes = <MIDINote>[];
+        int currentTime = 0;
+        int currentChannel = 0;
+        int currentProgram = 0;
+        
+        while (offset < trackEnd) {
+          // Read delta time
+          int deltaTime = 0;
+          int shift = 0;
+          while (offset < trackEnd) {
+            final byte = data[offset++];
+            deltaTime |= (byte & 0x7F) << shift;
+            if ((byte & 0x80) == 0) break;
+            shift += 7;
+          }
+          
+          if (offset >= trackEnd) break;
+          
+          currentTime += deltaTime;
+          
+          final status = data[offset];
+          if (status == 0xFF) {
+            // Meta event
+            final metaType = data[offset + 1];
+            final metaLength = data[offset + 2];
+            if (metaType == 0x51 && metaLength == 3) {
+              // Tempo event
+              final tempoValue = (data[offset + 3] << 16) | 
+                                (data[offset + 4] << 8) | 
+                                data[offset + 5];
+              tempo = 60000000 ~/ tempoValue;
+            }
+            offset += 3 + metaLength;
+          } else if ((status & 0xF0) == 0xC0) {
+            // Program change
+            currentChannel = status & 0x0F;
+            currentProgram = data[offset + 1];
+            offset += 2;
+          } else if ((status & 0xF0) == 0x90) {
+            // Note on
+            currentChannel = status & 0x0F;
+            final note = data[offset + 1];
+            final velocity = data[offset + 2];
+            
+            if (velocity > 0) {
+              // Find corresponding note off
+              int noteEndTime = currentTime;
+              int tempOffset = offset + 2;
+              int tempTime = currentTime;
+              
+              while (tempOffset < trackEnd) {
+                // Read delta time
+                int tempDelta = 0;
+                int tempShift = 0;
+                while (tempOffset < trackEnd) {
+                  final byte = data[tempOffset++];
+                  tempDelta |= (byte & 0x7F) << tempShift;
+                  if ((byte & 0x80) == 0) break;
+                  tempShift += 7;
+                }
+                
+                tempTime += tempDelta;
+                
+                if (tempOffset >= trackEnd) break;
+                
+                final tempStatus = data[tempOffset];
+                if (tempStatus == (0x80 | currentChannel) && 
+                    data[tempOffset + 1] == note) {
+                  noteEndTime = tempTime;
+                  break;
+                }
+                
+                tempOffset += 2;
+              }
+              
+              final duration = (noteEndTime - currentTime) / 480.0; // Assuming 480 ticks per beat
+              notes.add(MIDINote(
+                pitch: note,
+                velocity: velocity,
+                duration: duration,
+              ));
+            }
+            
+            offset += 2;
+          } else {
+            // Skip other events
+            offset += 2;
+          }
+        }
+        
+        if (notes.isNotEmpty) {
+          tracks.add(MIDITrack(
+            instrument: _getInstrumentName(currentProgram),
+            program: currentProgram,
+            notes: notes,
+          ));
+        }
+      } else {
+        offset++;
+      }
+    }
+    
+    return MIDIData(tempo: tempo, tracks: tracks);
+  }
+
+  String _getInstrumentName(int program) {
+    const instruments = [
+      'Acoustic Grand Piano', 'Bright Acoustic Piano', 'Electric Grand Piano',
+      'Honky-tonk Piano', 'Electric Piano 1', 'Electric Piano 2', 'Harpsichord',
+      'Clavi', 'Celesta', 'Glockenspiel', 'Music Box', 'Vibraphone',
+      'Marimba', 'Xylophone', 'Tubular Bells', 'Dulcimer', 'Violin',
+      'Viola', 'Cello', 'Double Bass', 'Trumpet', 'Trombone', 'Tuba',
+      'French Horn', 'Flute', 'Clarinet', 'Saxophone'
+    ];
+    
+    if (program < instruments.length) {
+      return instruments[program];
+    }
+    return 'Acoustic Grand Piano';
+  }
+
+  String _convertMIDIDataToText(MIDIData midiData) {
+    final buffer = StringBuffer();
+    
+    // Write tempo
+    buffer.writeln('tempo: ${midiData.tempo}');
+    buffer.writeln();
+    
+    // Write tracks
+    for (int i = 0; i < midiData.tracks.length; i++) {
+      final track = midiData.tracks[i];
+      
+      buffer.writeln('instrument: ${track.instrument}');
+      buffer.writeln();
+      
+      for (final note in track.notes) {
+        final noteName = _pitchToNoteName(note.pitch);
+        buffer.writeln('$noteName ${note.velocity} ${note.duration.toStringAsFixed(2)}');
+      }
+      
+      if (i < midiData.tracks.length - 1) {
+        buffer.writeln();
+      }
+    }
+    
+    return buffer.toString();
   }
 
   @override
@@ -598,7 +840,7 @@ G4 100 2.0''';
     final colorScheme = theme.colorScheme;
 
     return Scaffold(
-      backgroundColor: colorScheme.background,
+      backgroundColor: colorScheme.surface,
       body: Column(
         children: [
           // Custom Title Bar
@@ -619,7 +861,7 @@ G4 100 2.0''';
                     color: _soundFontLoaded ? colorScheme.primary : colorScheme.onSurfaceVariant,
                   ),
                   label: Text(_soundFontLoaded ? 'SoundFont Ready' : 'Loading...'),
-                  backgroundColor: colorScheme.surfaceVariant,
+                  backgroundColor: colorScheme.surfaceContainerHighest,
                 ),
               ],
             ),
@@ -634,7 +876,7 @@ G4 100 2.0''';
                   child: Card(
                     margin: const EdgeInsets.all(20),
                     elevation: 0,
-                    color: colorScheme.surfaceVariant.withOpacity(0.5),
+                    color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
                       side: BorderSide(color: colorScheme.outlineVariant, width: 0.5),
@@ -688,11 +930,17 @@ G4 100 2.0''';
                                 ),
                               ),
                               const SizedBox(width: 12),
-                              FilledButton.tonalIcon(
-                                onPressed: _saveMIDI,
-                                icon: const Icon(CupertinoIcons.cloud_download_fill),
-                                label: const Text('Save'),
-                              ),
+                                                             FilledButton.tonalIcon(
+                                 onPressed: _saveMIDI,
+                                 icon: const Icon(CupertinoIcons.cloud_download_fill),
+                                 label: const Text('Save'),
+                               ),
+                               const SizedBox(width: 12),
+                               FilledButton.tonalIcon(
+                                 onPressed: _importMIDI,
+                                 icon: const Icon(CupertinoIcons.folder_fill),
+                                 label: const Text('Import MIDI'),
+                               ),
                             ],
                           ),
                         ),
@@ -706,7 +954,7 @@ G4 100 2.0''';
                   child: Card(
                     margin: const EdgeInsets.fromLTRB(0, 20, 20, 20),
                     elevation: 0,
-                    color: colorScheme.surfaceVariant.withOpacity(0.5),
+                    color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
                       side: BorderSide(color: colorScheme.outlineVariant, width: 0.5),
@@ -735,7 +983,7 @@ G4 100 2.0''';
                             child: ListView.separated(
                               controller: _logController,
                               itemCount: _logs.length,
-                              separatorBuilder: (_, __) => Divider(color: colorScheme.outline.withOpacity(0.12)),
+                              separatorBuilder: (_, __) => Divider(color: colorScheme.outline.withValues(alpha: 0.12)),
                               itemBuilder: (context, index) {
                                 final log = _logs[index];
                                 final isError = log.contains('Error:');
@@ -743,7 +991,7 @@ G4 100 2.0''';
                                   log,
                                   style: theme.textTheme.bodySmall?.copyWith(
                                     fontFamily: 'SF Mono',
-                                    color: isError ? colorScheme.error : colorScheme.onSurfaceVariant,
+                                    color: isError ? colorScheme.error : colorScheme.onSurfaceVariant.withValues(alpha: 1.0),
                                   ),
                                 );
                               },

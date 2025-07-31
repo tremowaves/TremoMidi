@@ -37,6 +37,7 @@ dependencies:
   dart_melty_soundfont: ^1.1.16
   audioplayers: ^5.2.1
   file_saver: ^0.2.12
+  file_picker: ^6.1.1
 
 dev_dependencies:
   flutter_test:
