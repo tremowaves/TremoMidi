@@ -670,13 +670,17 @@ C5+Eb5+G5+C6 95 3.0''';
     super.dispose();
   }
 
-  void _cleanupAudioFiles() {
+  void _cleanupAudioFiles() async {
     try {
-      final directory = Directory.current;
-      final files = directory.listSync();
+      final tempDir = await getTemporaryDirectory();
+      final files = tempDir.listSync();
       for (final file in files) {
         if (file is File && file.path.contains('temp_audio_') && file.path.endsWith('.wav')) {
-          file.deleteSync();
+          try {
+            await file.delete();
+          } catch (e) {
+            // Ignore deletion errors
+          }
         }
       }
     } catch (e) {
