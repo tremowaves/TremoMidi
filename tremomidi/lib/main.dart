@@ -541,7 +541,7 @@ class _MIDIGeneratorHomeState extends State<MIDIGeneratorHome>
     _textController.text = '''tempo: 140
 instrument: Acoustic Grand Piano
 
-# C Minor Scale Melody with Overlapping Notes
+
 C4 100 0.5
 D4 100 0.5
 Eb4 100 0.5
@@ -551,13 +551,13 @@ Ab4 100 0.5
 Bb4 100 0.5
 C5 100 1.0
 
-# Overlapping melody notes (layering)
+
 C4 80 1.0
 D4 80 1.0
 Eb4 80 1.0
 F4 80 1.0
 
-# Chord progression in C minor
+
 C4+Eb4+G4 90 1.0
 D4+F4+Ab4 90 1.0
 Eb4+G4+Bb4 90 1.0
@@ -569,7 +569,7 @@ C5+Eb5+G5 90 1.0
 
 instrument: Acoustic Guitar (nylon)
 
-# Guitar melody in C minor
+
 C3 85 0.75
 D3 85 0.75
 Eb3 85 0.75
@@ -579,7 +579,7 @@ Ab3 85 0.75
 Bb3 85 0.75
 C4 85 1.5
 
-# Guitar chords with bass notes
+
 C3+Eb3+G3 80 1.0
 D3+F3+Ab3 80 1.0
 Eb3+G3+Bb3 80 1.0
@@ -587,7 +587,7 @@ F3+Ab3+C4 80 1.0
 
 instrument: Violin
 
-# Violin melody with overlapping notes
+
 C5 95 0.5
 D5 95 0.5
 Eb5 95 0.5
@@ -597,7 +597,7 @@ Ab5 95 0.5
 Bb5 95 0.5
 C6 95 1.0
 
-# Violin harmony notes (overlapping)
+
 E5 85 1.0
 F5 85 1.0
 G5 85 1.0
@@ -605,7 +605,7 @@ Ab5 85 1.0
 
 instrument: Trumpet
 
-# Trumpet melody in C minor
+
 C4 100 0.5
 D4 100 0.5
 Eb4 100 0.5
@@ -615,7 +615,7 @@ Ab4 100 0.5
 Bb4 100 0.5
 C5 100 1.0
 
-# Trumpet chord stabs
+
 C4+Eb4+G4 110 0.25
 D4+F4+Ab4 110 0.25
 Eb4+G4+Bb4 110 0.25
@@ -623,7 +623,7 @@ F4+Ab4+C5 110 0.25
 
 instrument: Flute
 
-# Flute melody with overlapping notes
+
 C6 90 0.75
 D6 90 0.75
 Eb6 90 0.75
@@ -633,7 +633,7 @@ Ab6 90 0.75
 Bb6 90 0.75
 C7 90 1.5
 
-# Flute harmony (overlapping)
+
 E6 80 1.0
 F6 80 1.0
 G6 80 1.0
@@ -641,7 +641,7 @@ Ab6 80 1.0
 
 instrument: Acoustic Grand Piano
 
-# Final chord progression with all instruments
+
 C4+Eb4+G4+C5 95 2.0
 D4+F4+Ab4+D5 95 2.0
 Eb4+G4+Bb4+Eb5 95 2.0
