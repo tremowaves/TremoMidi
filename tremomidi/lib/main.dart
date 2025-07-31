@@ -800,14 +800,13 @@ C5+Eb5+G5+C6 95 3.0''';
   void _preparePlaybackNotes(MIDIData midiData) {
     _playbackNotes.clear();
 
-    
     for (int trackIndex = 0; trackIndex < midiData.tracks.length; trackIndex++) {
       final track = midiData.tracks[trackIndex];
-      double trackTime = 0.0;
       
       for (final note in track.notes) {
+        // Use the note's actual start time instead of accumulating
         _playbackNotes.add(PlaybackNote(
-          time: trackTime,
+          time: note.startTime,
           pitch: note.pitch,
           velocity: note.velocity,
           duration: note.duration,
@@ -817,7 +816,7 @@ C5+Eb5+G5+C6 95 3.0''';
         ));
         
         _playbackNotes.add(PlaybackNote(
-          time: trackTime + note.duration,
+          time: note.startTime + note.duration,
           pitch: note.pitch,
           velocity: 0,
           duration: 0,
@@ -825,8 +824,6 @@ C5+Eb5+G5+C6 95 3.0''';
           program: track.program,
           isNoteOn: false,
         ));
-        
-        trackTime += note.duration;
       }
     }
     
@@ -935,17 +932,16 @@ C5+Eb5+G5+C6 95 3.0''';
       final totalSamples = (totalDuration * sampleRate).round();
       final buffer = ArrayInt16.zeros(numShorts: totalSamples);
       
-      // Create timeline of events
+      // Create timeline of events using actual start times
       final events = <TimelineEvent>[];
       
       for (int trackIndex = 0; trackIndex < _currentMidiData!.tracks.length; trackIndex++) {
         final track = _currentMidiData!.tracks[trackIndex];
-        double trackTime = 0;
         
         for (final note in track.notes) {
           // Note On event
           events.add(TimelineEvent(
-            time: trackTime,
+            time: note.startTime, // Use actual start time
             type: EventType.noteOn,
             channel: trackIndex,
             pitch: note.pitch,
@@ -954,14 +950,12 @@ C5+Eb5+G5+C6 95 3.0''';
           
           // Note Off event
           events.add(TimelineEvent(
-            time: trackTime + note.duration,
+            time: note.startTime + note.duration, // Use actual start time + duration
             type: EventType.noteOff,
             channel: trackIndex,
             pitch: note.pitch,
             velocity: 0,
           ));
-          
-          trackTime += note.duration;
         }
       }
       
@@ -1370,7 +1364,14 @@ class MIDINote {
   final int pitch;
   final int velocity;
   final double duration; // in seconds
-  MIDINote({required this.pitch, required this.velocity, required this.duration});
+  final double startTime; // in seconds - ADD THIS
+  
+  MIDINote({
+    required this.pitch, 
+    required this.velocity, 
+    required this.duration,
+    this.startTime = 0.0, // Default to 0
+  });
 }
 
 // Helper class to represent either a single note or a chord
@@ -1551,7 +1552,10 @@ class MIDITextParser {
   };
 
   MIDIData parse(String text) {
-    final lines = text.split('\n').where((line) => line.trim().isNotEmpty);
+    // Filter out comment lines and empty lines
+    final lines = text.split('\n')
+        .where((line) => line.trim().isNotEmpty && !line.trim().startsWith('#'));
+    
     int tempo = 120;
     Map<String, List<ChordOrNote>> instrumentNotes = {};
     String currentInstrument = 'Acoustic Grand Piano';
@@ -1562,7 +1566,7 @@ class MIDITextParser {
         tempo = int.tryParse(trimmed.substring(6).trim()) ?? 120;
       } else if (trimmed.startsWith('instrument:')) {
         currentInstrument = trimmed.substring(11).trim();
-        print('DEBUG: Setting instrument to: $currentInstrument'); // ADD THIS
+        print('DEBUG: Setting instrument to: $currentInstrument');
         instrumentNotes.putIfAbsent(currentInstrument, () => []);
       } else {
         final parts = trimmed.split(RegExp(r'\s+'));
@@ -1600,18 +1604,24 @@ class MIDITextParser {
 
     final tracks = instrumentNotes.entries.map((entry) {
       final program = instrumentMap[entry.key] ?? 0;
-      print('DEBUG: Instrument "${entry.key}" -> Program $program'); // ADD THIS
+      print('DEBUG: Instrument "${entry.key}" -> Program $program');
       
-      // Convert ChordOrNote to MIDINote
+      // FIXED: Convert ChordOrNote to MIDINote with proper timing
       final midiNotes = <MIDINote>[];
+      double currentTime = 0.0; // Track time position for this instrument
+      
       for (final chordOrNote in entry.value) {
+        // For chords, all notes should start at the same time
         for (final pitch in chordOrNote.pitches) {
           midiNotes.add(MIDINote(
             pitch: pitch,
             velocity: chordOrNote.velocity,
             duration: chordOrNote.duration,
+            startTime: currentTime, // Add start time property
           ));
         }
+        // Move to next time position after processing all notes in this chord/note
+        currentTime += chordOrNote.duration;
       }
       
       return MIDITrack(instrument: entry.key, program: program, notes: midiNotes);
@@ -1641,35 +1651,19 @@ class MIDIFileGenerator {
       writer.addTrack();
       writer.addProgramChange(channel: i, program: track.program);
       
-      // Group notes by start time to handle overlapping notes (chords)
-      final noteGroups = <int, List<MIDINote>>{};
-      int currentTicks = 0;
-      
+      // Use actual start times from notes
       for (final note in track.notes) {
-        noteGroups.putIfAbsent(currentTicks, () => []);
-        noteGroups[currentTicks]!.add(note);
-        currentTicks += (note.duration * midiData.tempo / 60.0 * writer.ticksPerBeat).round();
-      }
-      
-      // Add grouped notes to the writer
-      for (final entry in noteGroups.entries) {
-        final startTicks = entry.key;
-        final notes = entry.value;
+        final double beatsPerSecond = midiData.tempo / 60.0;
+        final startTicks = (note.startTime * beatsPerSecond * writer.ticksPerBeat).round();
+        final durationInTicks = (note.duration * beatsPerSecond * writer.ticksPerBeat).round();
         
-        for (final note in notes) {
-          // Convert duration from seconds to ticks, accounting for tempo
-          final double beatsPerSecond = midiData.tempo / 60.0;
-          final double durationInBeats = note.duration * beatsPerSecond;
-          final durationInTicks = (durationInBeats * writer.ticksPerBeat).round();
-          
-          writer.addNote(
-            channel: i,
-            pitch: note.pitch,
-            velocity: note.velocity,
-            startTicks: startTicks,
-            endTicks: startTicks + durationInTicks,
-          );
-        }
+        writer.addNote(
+          channel: i,
+          pitch: note.pitch,
+          velocity: note.velocity,
+          startTicks: startTicks,
+          endTicks: startTicks + durationInTicks,
+        );
       }
     }
     return writer.build();
