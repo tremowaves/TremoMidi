@@ -1,101 +1,90 @@
-# TremoMIDI - MIDI Generator
+# TremoMidi - MIDI Generator & Player
 
-Một ứng dụng Flutter để tạo file MIDI từ text input đơn giản.
+Ứng dụng Flutter để tạo và phát nhạc MIDI từ văn bản.
 
 ## Tính năng
 
-- **Text-to-MIDI**: Chuyển đổi text notation thành file MIDI
-- **Multiple Instruments**: Hỗ trợ nhiều nhạc cụ khác nhau
-- **Tempo Control**: Điều chỉnh tempo cho từng track
-- **Real-time Generation**: Tạo MIDI file ngay lập tức
-- **Audio Playback**: Phát âm thanh trực tiếp từ synthesizer
-- **File Export**: Lưu file MIDI với tên tự động
+- **Text to MIDI**: Chuyển đổi văn bản thành file MIDI
+- **MIDI Playback**: Phát âm thanh trực tiếp từ synthesizer
+- **MIDI Import**: Import file MIDI và chuyển đổi thành văn bản có thể chỉnh sửa
+- **SoundFont Support**: Sử dụng SoundFont để tạo âm thanh chất lượng cao
+- **Cross-platform**: Hoạt động trên Windows, macOS, Linux, Android, iOS
 
 ## Cách sử dụng
 
-### Cú pháp Text Notation
+### Tạo MIDI từ văn bản
 
+1. Nhập văn bản theo định dạng:
 ```
 tempo: 120
+
 instrument: Acoustic Grand Piano
 
-C4 100 0.5
-D4 100 0.5
-E4 100 0.5
-F4 100 0.5
-G4 100 1.0
-G4 100 1.0
-A4 100 0.5
-A4 100 0.5
-A4 100 0.5
-A4 100 0.5
-G4 100 2.0
+C4 96 1.0
+D4 96 1.0
+E4 96 1.0
+F4 96 1.0
+G4 96 2.0
 ```
 
-### Format
+2. Nhấn "Generate MIDI" để tạo file MIDI
+3. Nhấn "Play" để phát âm thanh
 
-- `tempo: [BPM]` - Đặt tempo cho track
-- `instrument: [Tên nhạc cụ]` - Chọn nhạc cụ
-- `[Note] [Velocity] [Duration]` - Định nghĩa note
+### Import MIDI file
 
-### Notes
+1. Nhấn "Import MIDI" để chọn file MIDI (.mid hoặc .midi)
+2. Ứng dụng sẽ tự động chuyển đổi MIDI thành văn bản
+3. Chỉnh sửa văn bản và tạo lại MIDI nếu cần
 
-- **Note Names**: C, C#, Db, D, D#, Eb, E, F, F#, Gb, G, G#, Ab, A, A#, Bb, B
-- **Octaves**: 0-9 (ví dụ: C4, A5)
-- **Velocity**: 0-127 (độ mạnh của note)
-- **Duration**: Thời gian phát note (giây)
+### Định dạng văn bản
 
-### Nhạc cụ hỗ trợ
-
-- Piano: Acoustic Grand Piano, Bright Acoustic Piano, Electric Grand Piano
-- Strings: Violin, Viola, Cello, Double Bass
-- Brass: Trumpet, Trombone, Tuba, French Horn
-- Woodwinds: Flute, Clarinet, Saxophone
-- Và nhiều nhạc cụ khác...
-
-## Cài đặt
-
-1. Clone repository
-2. Chạy `flutter pub get`
-3. Chạy `flutter run`
-
-## Build
-
-```bash
-# Windows
-flutter build windows
-
-# macOS
-flutter build macos
-
-# Linux
-flutter build linux
-```
+- `tempo: [số]` - Tốc độ (BPM)
+- `instrument: [tên nhạc cụ]` - Nhạc cụ cho track
+- `[note] [velocity] [duration]` - Nốt nhạc
+  - `note`: Tên nốt (C4, D#5, etc.)
+  - `velocity`: Độ mạnh (0-127)
+  - `duration`: Thời gian (giây)
 
 ## Dependencies
 
-- `dart_melty_soundfont`: Xử lý SoundFont và MIDI synthesis
-- `audioplayers`: Audio playback functionality
-- `file_saver`: Lưu file MIDI
-- `flutter`: UI framework
+- `dart_melty_soundfont`: SoundFont synthesizer
+- `audioplayers`: Audio playback
+- `file_saver`: Save MIDI files
+- `file_picker`: Import MIDI files
 
-## Cấu trúc Project
+## Cài đặt
 
+### Windows Installer
+
+1. Tải file `TremoMidi_Setup.exe` từ thư mục `installer/`
+2. Chạy installer và làm theo hướng dẫn
+3. Ứng dụng sẽ được cài đặt với SoundFont
+
+### Build từ source
+
+```bash
+flutter pub get
+flutter build windows --release
 ```
-lib/
-├── main.dart          # Main application
-├── models/            # Data models
-└── utils/             # Utility functions
-```
 
-## Lưu ý
+## Ghi chú
 
-- Ứng dụng sử dụng TremoSoundFont.sf2 cho âm thanh
-- File MIDI được tạo theo chuẩn Standard MIDI Files (SMF)
-- Hỗ trợ format 1 MIDI với multiple tracks
-- Audio playback sử dụng dart_melty_soundfont synthesizer
-- Hỗ trợ real-time MIDI playback với synthesizer
+- Âm thanh được tạo từ SoundFont `TremoSoundFont.sf2`
+- Hỗ trợ import MIDI với parsing chính xác
+- Tự động cleanup file tạm thời
+- Giao diện Material Design 3
+
+## MIDI Import Features
+
+Ứng dụng sử dụng `MIDIToTextConverter` để parse MIDI files với:
+
+- **Comprehensive MIDI Parsing**: Hỗ trợ đầy đủ MIDI format
+- **Variable Length Quantity**: Xử lý chính xác timing
+- **Tempo Extraction**: Trích xuất tempo từ MIDI
+- **Instrument Mapping**: 128 General MIDI instruments
+- **Note Tracking**: Theo dõi note on/off events
+- **Multi-track Support**: Hỗ trợ nhiều track
 
 ## License
 
-MIT License
+MIT License - Xem file LICENSE để biết thêm chi tiết.
