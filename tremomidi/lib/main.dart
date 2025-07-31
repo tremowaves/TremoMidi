@@ -75,6 +75,7 @@ class _MIDIGeneratorHomeState extends State<MIDIGeneratorHome>
   final AudioPlayer _audioPlayer = AudioPlayer();
   Timer? _audioTimer;
   final List<Int16List> _audioBuffer = [];
+  String? _currentAudioFile;
 
   // MIDI Data
   MIDIData? _currentMidiData;
@@ -128,8 +129,25 @@ G4 100 2.0''';
     _playButtonController.dispose();
     _textController.dispose();
     _logController.dispose();
+    
+    // Cleanup audio files
+    _cleanupAudioFiles();
 
     super.dispose();
+  }
+
+  void _cleanupAudioFiles() {
+    try {
+      final directory = Directory.current;
+      final files = directory.listSync();
+      for (final file in files) {
+        if (file is File && file.path.contains('temp_audio_') && file.path.endsWith('.wav')) {
+          file.deleteSync();
+        }
+      }
+    } catch (e) {
+      // Ignore cleanup errors
+    }
   }
 
   void _addLog(String message) {
@@ -294,7 +312,9 @@ G4 100 2.0''';
       await _generateAudioFile();
       
       // Play the generated audio file
-      await _audioPlayer.play(DeviceFileSource('temp_audio.wav'));
+      if (_currentAudioFile != null) {
+        await _audioPlayer.play(DeviceFileSource(_currentAudioFile!));
+      }
       _addLog('Audio playback started');
       
       // Set up audio timer to generate samples
@@ -369,6 +389,9 @@ G4 100 2.0''';
       _playButtonController.reverse();
       _addLog('Playback stopped');
       
+      // Stop audio player
+      _audioPlayer.stop();
+      
       // Stop all notes
       if (_synthesizer != null) {
         for (int channel = 0; channel < 16; channel++) {
@@ -417,38 +440,91 @@ G4 100 2.0''';
         _synthesizer!.selectPreset(channel: i, preset: track.program);
       }
       
-      // Play all notes
+      // Create timeline of events
+      final events = <TimelineEvent>[];
+      
       for (int trackIndex = 0; trackIndex < _currentMidiData!.tracks.length; trackIndex++) {
         final track = _currentMidiData!.tracks[trackIndex];
+        double trackTime = 0;
         
         for (final note in track.notes) {
-          // Note On
-          _synthesizer!.noteOn(
+          // Note On event
+          events.add(TimelineEvent(
+            time: trackTime,
+            type: EventType.noteOn,
             channel: trackIndex,
-            key: note.pitch,
+            pitch: note.pitch,
             velocity: note.velocity,
-          );
+          ));
           
-          // Note Off after duration
-          Future.delayed(Duration(milliseconds: (note.duration * 1000).round()), () {
-            if (_synthesizer != null) {
-              _synthesizer!.noteOff(
-                channel: trackIndex,
-                key: note.pitch,
-              );
-            }
-          });
+          // Note Off event
+          events.add(TimelineEvent(
+            time: trackTime + note.duration,
+            type: EventType.noteOff,
+            channel: trackIndex,
+            pitch: note.pitch,
+            velocity: 0,
+          ));
+          
+          trackTime += note.duration;
         }
       }
       
-      // Render audio
-      _synthesizer!.renderMonoInt16(buffer);
+      // Sort events by time
+      events.sort((a, b) => a.time.compareTo(b.time));
       
-      // Save to WAV file
-      final file = File('temp_audio.wav');
+      // Render audio with proper timing
+      int currentSample = 0;
+      int eventIndex = 0;
+      final samplesPerBlock = 512;
+      
+      while (currentSample < totalSamples) {
+        final blockEndSample = (currentSample + samplesPerBlock).clamp(0, totalSamples);
+        final blockSamples = blockEndSample - currentSample;
+        final blockBuffer = ArrayInt16.zeros(numShorts: blockSamples);
+        
+        // Process events that should happen in this block
+        final currentTime = currentSample / sampleRate;
+        final blockEndTime = blockEndSample / sampleRate;
+        
+        while (eventIndex < events.length && events[eventIndex].time < blockEndTime) {
+          final event = events[eventIndex];
+          if (event.time >= currentTime) {
+            if (event.type == EventType.noteOn) {
+              _synthesizer!.noteOn(
+                channel: event.channel,
+                key: event.pitch,
+                velocity: event.velocity,
+              );
+            } else if (event.type == EventType.noteOff) {
+              _synthesizer!.noteOff(
+                channel: event.channel,
+                key: event.pitch,
+              );
+            }
+          }
+          eventIndex++;
+        }
+        
+        // Render this block
+        _synthesizer!.renderMonoInt16(blockBuffer);
+        
+        // Copy to main buffer
+        for (int i = 0; i < blockSamples; i++) {
+          buffer[currentSample + i] = blockBuffer[i];
+        }
+        
+        currentSample = blockEndSample;
+      }
+      
+      // Save to WAV file with unique name
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final fileName = 'temp_audio_$timestamp.wav';
+      final file = File(fileName);
       await file.writeAsBytes(_createWavHeader(sampleRate, totalSamples) + 
                              _arrayInt16ToBytes(buffer, totalSamples));
       
+      _currentAudioFile = fileName;
       _addLog('Generated audio file: ${file.lengthSync()} bytes');
     } catch (e) {
       _addLog('Error generating audio file: $e');
@@ -962,6 +1038,24 @@ class _MidiEvent {
   final int status;
   final List<int> data;
   _MidiEvent(this.ticks, this.status, this.data);
+}
+
+enum EventType { noteOn, noteOff }
+
+class TimelineEvent {
+  final double time;
+  final EventType type;
+  final int channel;
+  final int pitch;
+  final int velocity;
+
+  TimelineEvent({
+    required this.time,
+    required this.type,
+    required this.channel,
+    required this.pitch,
+    required this.velocity,
+  });
 }
 
 
