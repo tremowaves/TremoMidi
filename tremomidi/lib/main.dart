@@ -276,20 +276,23 @@ class MIDIToTextConverter {
             offset += 2;
             
             if (velocity > 0) {
-              activeNotes[note] = _ActiveNote(
+              // Store note start time with unique key (note + channel)
+              final noteKey = note | (channel << 8);
+              activeNotes[noteKey] = _ActiveNote(
                 startTime: currentTime,
                 channel: channel,
                 velocity: velocity,
               );
-            } else { // Velocity 0 is a Note Off
-              _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat, tempo);
+            } else {
+              final noteKey = note | (channel << 8);
+              _finalizeNote(activeNotes, noteKey, note, currentTime, notes, ticksPerBeat, tempo);
             }
           } else if (eventType == 0x80) { // Note Off
             if (offset + 1 >= data.length) break;
             final note = data[offset];
-            // final velocity = data[offset + 1]; // We don't use the off velocity
             offset += 2;
-            _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat, tempo);
+            final noteKey = note | (channel << 8);
+            _finalizeNote(activeNotes, noteKey, note, currentTime, notes, ticksPerBeat, tempo);
           } else if (eventType == 0xC0) { // Program Change
             if (offset >= data.length) break;
             currentProgram = data[offset];
@@ -316,8 +319,9 @@ class MIDIToTextConverter {
         }
         
         // Finalize any remaining active notes
-        for (final note in activeNotes.keys.toList()) {
-          _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat, tempo);
+        for (final noteKey in activeNotes.keys.toList()) {
+          final notePitch = noteKey & 0xFF; // Extract original note pitch
+          _finalizeNote(activeNotes, noteKey, notePitch, currentTime, notes, ticksPerBeat, tempo);
         }
         
         if (notes.isNotEmpty) {
@@ -338,14 +342,22 @@ class MIDIToTextConverter {
     return MIDIData(tempo: tempo, tracks: tracks);
   }
 
-  static void _finalizeNote(Map<int, _ActiveNote> activeNotes, int note, int currentTime, List<MIDINote> notes, int ticksPerBeat, int tempo) {
-    final activeNote = activeNotes.remove(note);
+  static void _finalizeNote(
+    Map<int, _ActiveNote> activeNotes, 
+    int noteKey, 
+    int notePitch, 
+    int currentTime, 
+    List<MIDINote> notes, 
+    int ticksPerBeat, 
+    int tempo
+  ) {
+    final activeNote = activeNotes.remove(noteKey);
     if (activeNote != null) {
-      // Convert ticks to seconds using tempo
-      final durationInBeats = (currentTime - activeNote.startTime) / ticksPerBeat.toDouble();
+      final durationInTicks = currentTime - activeNote.startTime;
+      final durationInBeats = durationInTicks / ticksPerBeat.toDouble();
       final durationInSeconds = durationInBeats * (60.0 / tempo);
       notes.add(MIDINote(
-        pitch: note,
+        pitch: notePitch,
         velocity: activeNote.velocity,
         duration: durationInSeconds,
       ));
@@ -362,14 +374,12 @@ class MIDIToTextConverter {
 
   static _VarIntResult _readVarInt(Uint8List data, int offset) {
     int value = 0;
-    int shift = 0;
     int currentOffset = offset;
     
     while (currentOffset < data.length) {
       final byte = data[currentOffset++];
-      value |= (byte & 0x7F) << shift;
+      value = (value << 7) | (byte & 0x7F); // FIX: Correct bit order
       if ((byte & 0x80) == 0) break;
-      shift += 7;
     }
     
     return _VarIntResult(value: value, offset: currentOffset);
