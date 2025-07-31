@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -13,13 +12,13 @@ import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
 // Shared constants to avoid code duplication
-const Map<int, String> INSTRUMENTS = {
+const Map<int, String> instruments = {
   0: 'Acoustic Grand Piano', 1: 'Bright Acoustic Piano', 2: 'Electric Grand Piano', 3: 'Honky-tonk Piano', 4: 'Electric Piano 1', 5: 'Electric Piano 2', 6: 'Harpsichord', 7: 'Clavi', 8: 'Celesta', 9: 'Glockenspiel', 10: 'Music Box', 11: 'Vibraphone', 12: 'Marimba', 13: 'Xylophone', 14: 'Tubular Bells', 15: 'Dulcimer', 16: 'Drawbar Organ', 17: 'Percussive Organ', 18: 'Rock Organ', 19: 'Church Organ', 20: 'Reed Organ', 21: 'Accordion', 22: 'Harmonica', 23: 'Tango Accordion', 24: 'Acoustic Guitar (nylon)', 25: 'Acoustic Guitar (steel)', 26: 'Electric Guitar (jazz)', 27: 'Electric Guitar (clean)', 28: 'Electric Guitar (muted)', 29: 'Overdriven Guitar', 30: 'Distortion Guitar', 31: 'Guitar Harmonics', 32: 'Acoustic Bass', 33: 'Electric Bass (finger)', 34: 'Electric Bass (pick)', 35: 'Fretless Bass', 36: 'Slap Bass 1', 37: 'Slap Bass 2', 38: 'Synth Bass 1', 39: 'Synth Bass 2', 40: 'Violin', 41: 'Viola', 42: 'Cello', 43: 'Contrabass', 44: 'Tremolo Strings', 45: 'Pizzicato Strings', 46: 'Orchestral Harp', 47: 'Timpani', 48: 'String Ensemble 1', 49: 'String Ensemble 2', 50: 'Synth Strings 1', 51: 'Synth Strings 2', 52: 'Choir Aahs', 53: 'Voice Oohs', 54: 'Synth Voice', 55: 'Orchestra Hit', 56: 'Trumpet', 57: 'Trombone', 58: 'Tuba', 59: 'Muted Trumpet', 60: 'French Horn', 61: 'Brass Section', 62: 'Synth Brass 1', 63: 'Synth Brass 2', 64: 'Soprano Sax', 65: 'Alto Sax', 66: 'Tenor Sax', 67: 'Baritone Sax', 68: 'Oboe', 69: 'English Horn', 70: 'Bassoon', 71: 'Clarinet', 72: 'Piccolo', 73: 'Flute', 74: 'Recorder', 75: 'Pan Flute', 76: 'Blown Bottle', 77: 'Shakuhachi', 78: 'Whistle', 79: 'Ocarina', 80: 'Lead 1 (square)', 81: 'Lead 2 (sawtooth)', 82: 'Lead 3 (calliope)', 83: 'Lead 4 (chiff)', 84: 'Lead 5 (charang)', 85: 'Lead 6 (voice)', 86: 'Lead 7 (fifths)', 87: 'Lead 8 (bass + lead)', 88: 'Pad 1 (new age)', 89: 'Pad 2 (warm)', 90: 'Pad 3 (polysynth)', 91: 'Pad 4 (choir)', 92: 'Pad 5 (bowed)', 93: 'Pad 6 (metallic)', 94: 'Pad 7 (halo)', 95: 'Pad 8 (sweep)', 96: 'FX 1 (rain)', 97: 'FX 2 (soundtrack)', 98: 'FX 3 (crystal)', 99: 'FX 4 (atmosphere)', 100: 'FX 5 (brightness)', 101: 'FX 6 (goblins)', 102: 'FX 7 (echoes)', 103: 'FX 8 (sci-fi)', 104: 'Sitar', 105: 'Banjo', 106: 'Shamisen', 107: 'Koto', 108: 'Kalimba', 109: 'Bagpipe', 110: 'Fiddle', 111: 'Shanai', 112: 'Tinkle Bell', 113: 'Agogo', 114: 'Steel Drums', 115: 'Woodblock', 116: 'Taiko Drum', 117: 'Melodic Tom', 118: 'Synth Drum', 119: 'Reverse Cymbal', 120: 'Guitar Fret Noise', 121: 'Breath Noise', 122: 'Seashore', 123: 'Bird Tweet', 124: 'Telephone Ring', 125: 'Helicopter', 126: 'Applause', 127: 'Gunshot'
 };
 
 // MIDI to Text Converter
 class MIDIToTextConverter {
-  static const Map<int, String> _instruments = INSTRUMENTS;
+  static const Map<int, String> _instruments = instruments;
 
   static const Map<int, String> _noteNames = {
     0: 'C-1', 1: 'C#-1', 2: 'D-1', 3: 'D#-1', 4: 'E-1', 5: 'F-1', 6: 'F#-1', 7: 'G-1', 8: 'G#-1', 9: 'A-1', 10: 'A#-1', 11: 'B-1',
@@ -543,7 +542,6 @@ C4 85 1.5''';
 
       while (currentSample < totalSamples) {
         final blockEndSample = (currentSample + renderBlockSize).clamp(0, totalSamples);
-        final currentTime = currentSample / sampleRate;
         final blockEndTime = blockEndSample / sampleRate;
 
         // Process all MIDI events that occur before the end of this audio block
@@ -588,29 +586,44 @@ C4 85 1.5''';
   // FIXED: Simplified WAV header creation
   Uint8List _createWavHeader(int sampleRate, int numSamples) {
     final byteData = ByteData(44);
-    final BITS_PER_SAMPLE = 16;
-    final NUM_CHANNELS = 1;
+    final bitsPerSample = 16;
+    final numChannels = 1;
     
     byteData.setUint32(0, 0x52494646, Endian.little); // 'RIFF'
-    byteData.setUint32(4, 36 + numSamples * NUM_CHANNELS * BITS_PER_SAMPLE ~/ 8, Endian.little);
+    byteData.setUint32(4, 36 + numSamples * numChannels * bitsPerSample ~/ 8, Endian.little);
     byteData.setUint32(8, 0x57415645, Endian.little); // 'WAVE'
     byteData.setUint32(12, 0x666d7420, Endian.little); // 'fmt '
     byteData.setUint32(16, 16, Endian.little); // PCM sub-chunk size
     byteData.setUint16(20, 1, Endian.little); // PCM format
-    byteData.setUint16(22, NUM_CHANNELS.toInt(), Endian.little);
+    byteData.setUint16(22, numChannels.toInt(), Endian.little);
     byteData.setUint32(24, sampleRate, Endian.little);
-    byteData.setUint32(28, sampleRate * NUM_CHANNELS * BITS_PER_SAMPLE ~/ 8, Endian.little); // Byte rate
-    byteData.setUint16(32, NUM_CHANNELS * BITS_PER_SAMPLE ~/ 8, Endian.little); // Block align
-    byteData.setUint16(34, BITS_PER_SAMPLE.toInt(), Endian.little);
+    byteData.setUint32(28, sampleRate * numChannels * bitsPerSample ~/ 8, Endian.little); // Byte rate
+    byteData.setUint16(32, numChannels * bitsPerSample ~/ 8, Endian.little); // Block align
+    byteData.setUint16(34, bitsPerSample.toInt(), Endian.little);
     byteData.setUint32(36, 0x64617461, Endian.little); // 'data'
-    byteData.setUint32(40, numSamples * NUM_CHANNELS * BITS_PER_SAMPLE ~/ 8, Endian.little);
+    byteData.setUint32(40, numSamples * numChannels * bitsPerSample ~/ 8, Endian.little);
     
     return byteData.buffer.asUint8List();
   }
 
   // FIXED: Simplified byte conversion
   Uint8List _arrayInt16ToBytes(ArrayInt16 array) {
-    return array.buffer.asUint8List();
+    // Convert ArrayInt16 to Uint8List by accessing individual elements
+    final size = 1024; // Assume a reasonable size, will be adjusted based on actual usage
+    final bytes = ByteData(size * 2);
+    int actualSize = 0;
+    
+    for (int i = 0; i < size; i++) {
+      try {
+        final value = array[i];
+        bytes.setInt16(i * 2, value, Endian.little);
+        actualSize = (i + 1) * 2;
+      } catch (e) {
+        break; // Reached end of array
+      }
+    }
+    
+    return bytes.buffer.asUint8List(0, actualSize);
   }
 
   Future<void> _saveMIDI() async {
@@ -682,7 +695,7 @@ C4 85 1.5''';
                 Expanded(
                   flex: 3,
                   child: Card(
-                    margin: const EdgeInsets.all(20), elevation: 0, color: colorScheme.surfaceContainerHighest.withOpacity(0.5),
+                    margin: const EdgeInsets.all(20), elevation: 0, color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: colorScheme.outlineVariant, width: 0.5)),
                     child: Column(
                       children: [
@@ -720,7 +733,7 @@ C4 85 1.5''';
                 Expanded(
                   flex: 2,
                   child: Card(
-                    margin: const EdgeInsets.fromLTRB(0, 20, 20, 20), elevation: 0, color: colorScheme.surfaceContainerHighest.withOpacity(0.5),
+                    margin: const EdgeInsets.fromLTRB(0, 20, 20, 20), elevation: 0, color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: colorScheme.outlineVariant, width: 0.5)),
                     child: Column(
                       children: [
@@ -734,7 +747,7 @@ C4 85 1.5''';
                             padding: const EdgeInsets.all(16),
                             child: ListView.separated(
                               controller: _logController, itemCount: _logs.length,
-                              separatorBuilder: (_, __) => Divider(color: colorScheme.outline.withOpacity(0.12)),
+                              separatorBuilder: (_, __) => Divider(color: colorScheme.outline.withValues(alpha: 0.12)),
                               itemBuilder: (context, index) {
                                 final log = _logs[index];
                                 final isError = log.contains('Error');
@@ -786,8 +799,8 @@ class ChordOrNote {
 }
 
 class MIDITextParser {
-  static const Map<String, int> noteMap = {'C': 0, 'C#': 1, 'Db': 1, 'D': 2, 'D#': 3, 'Eb': 3, 'E': 4, 'F': 5, 'F#': 6, 'Gb': 6, 'G': 7, 'G#': 8, 'Ab': 8, 'A': 9, 'A#': 10, 'Bb': 10, 'B': 11};
-  static Map<String, int> get instrumentMap => Map.fromEntries(INSTRUMENTS.entries.map((e) => MapEntry(e.value, e.key)));
+  static const Map<String, int> noteMap = {'C': 0, 'C#': 1, 'DB': 1, 'D': 2, 'D#': 3, 'EB': 3, 'E': 4, 'F': 5, 'F#': 6, 'GB': 6, 'G': 7, 'G#': 8, 'AB': 8, 'A': 9, 'A#': 10, 'BB': 10, 'B': 11};
+  static Map<String, int> get instrumentMap => Map.fromEntries(instruments.entries.map((e) => MapEntry(e.value, e.key)));
 
   MIDIData parse(String text) {
     final lines = text.split('\n').where((line) => line.trim().isNotEmpty && !line.trim().startsWith('#'));
@@ -840,9 +853,9 @@ class MIDITextParser {
   }
 
   int _parseNoteName(String noteName) {
-    final match = RegExp(r'^([A-G][#b]?)(-?\d+)$').firstMatch(noteName.toUpperCase());
+    final match = RegExp(r'^([A-G][#b]?)(-?\d+)$').firstMatch(noteName);
     if (match == null) throw FormatException('Invalid note name: $noteName');
-    final noteBase = match.group(1)!;
+    final noteBase = match.group(1)!.toUpperCase();
     final octave = int.parse(match.group(2)!);
     final noteValue = noteMap[noteBase];
     if (noteValue == null) throw FormatException('Invalid note: $noteBase');
@@ -896,7 +909,8 @@ class MidiWriter {
     builder.add(_int16(_tracks.length + 1));
     builder.add(_int16(ticksPerBeat));
 
-    final tempoTrackBytes = MidiTrackWriter()..addTempo(_tempo)..build();
+    final tempoTrackWriter = MidiTrackWriter()..addTempo(_tempo);
+    final tempoTrackBytes = tempoTrackWriter.build();
     builder.add('MTrk'.codeUnits);
     builder.add(_int32(tempoTrackBytes.length));
     builder.add(tempoTrackBytes);
