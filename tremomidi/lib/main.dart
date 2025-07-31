@@ -1705,6 +1705,12 @@ class MIDITextParser {
 
     for (final line in lines) {
       final trimmed = line.trim();
+      
+      // Skip comment lines that start with *
+      if (trimmed.startsWith('*')) {
+        continue;
+      }
+      
       if (trimmed.startsWith('tempo:')) {
         tempo = int.tryParse(trimmed.substring(6).trim()) ?? 120;
       } else if (trimmed.startsWith('instrument:')) {
