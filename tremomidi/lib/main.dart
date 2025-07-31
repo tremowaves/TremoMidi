@@ -291,7 +291,7 @@ class MIDIToTextConverter {
               );
             } else {
               // Note off (velocity = 0)
-              _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat);
+              _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat, tempo);
             }
             
             offset += 3;
@@ -301,7 +301,7 @@ class MIDIToTextConverter {
             currentChannel = status & 0x0F;
             final note = data[offset + 1];
             
-            _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat);
+            _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat, tempo);
             
             offset += 3;
           } else {
@@ -312,7 +312,7 @@ class MIDIToTextConverter {
         
         // Finalize any remaining active notes
         for (final note in activeNotes.keys.toList()) {
-          _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat);
+          _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat, tempo);
         }
         
         if (notes.isNotEmpty) {
@@ -333,14 +333,16 @@ class MIDIToTextConverter {
     return MIDIData(tempo: tempo, tracks: tracks);
   }
 
-  static void _finalizeNote(Map<int, _ActiveNote> activeNotes, int note, int currentTime, List<MIDINote> notes, int ticksPerBeat) {
+  static void _finalizeNote(Map<int, _ActiveNote> activeNotes, int note, int currentTime, List<MIDINote> notes, int ticksPerBeat, int tempo) {
     final activeNote = activeNotes.remove(note);
     if (activeNote != null) {
-      final duration = (currentTime - activeNote.startTime) / ticksPerBeat.toDouble();
+      // Convert ticks to seconds using tempo
+      final durationInBeats = (currentTime - activeNote.startTime) / ticksPerBeat.toDouble();
+      final durationInSeconds = durationInBeats * (60.0 / tempo);
       notes.add(MIDINote(
         pitch: note,
         velocity: activeNote.velocity,
-        duration: duration,
+        duration: durationInSeconds,
       ));
     }
   }
@@ -435,7 +437,7 @@ class MIDIGeneratorHome extends StatefulWidget {
   const MIDIGeneratorHome({super.key});
 
   @override
-  _MIDIGeneratorHomeState createState() => _MIDIGeneratorHomeState();
+  State<MIDIGeneratorHome> createState() => _MIDIGeneratorHomeState();
 }
 
 class _MIDIGeneratorHomeState extends State<MIDIGeneratorHome>
@@ -1416,9 +1418,9 @@ class MidiWriter {
   }
 
   static Uint8List _int16(int value) =>
-      Uint8List(2)..buffer.asByteData().setInt16(0, value);
+      Uint8List(2)..buffer.asByteData().setInt16(0, value, Endian.big);
   static Uint8List _int32(int value) =>
-      Uint8List(4)..buffer.asByteData().setInt32(0, value);
+      Uint8List(4)..buffer.asByteData().setInt32(0, value, Endian.big);
 }
 
 class MidiTrackWriter {
