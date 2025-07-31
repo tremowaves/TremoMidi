@@ -9,6 +9,7 @@ import 'package:dart_melty_soundfont/dart_melty_soundfont.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:file_saver/file_saver.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
 
 // MIDI to Text Converter
 class MIDIToTextConverter {
@@ -239,12 +240,12 @@ class MIDIToTextConverter {
         
         final notes = <MIDINote>[];
         int currentTime = 0;
-        int currentChannel = 0;
         int currentProgram = 0;
         final activeNotes = <int, _ActiveNote>{};
         
+        int lastStatus = 0; // For running status
+
         while (offset < trackEnd && offset < data.length) {
-          // Read delta time
           final deltaTimeResult = _readVarInt(data, offset);
           final deltaTime = deltaTimeResult.value;
           offset = deltaTimeResult.offset;
@@ -253,61 +254,65 @@ class MIDIToTextConverter {
           
           currentTime += deltaTime;
           
-          final status = data[offset];
-          if (status == 0xFF) {
-            // Meta event
-            if (offset + 2 >= data.length) break;
-            final metaType = data[offset + 1];
-            final metaLength = data[offset + 2];
-            
-            if (metaType == 0x51 && metaLength == 3 && offset + 5 < data.length) {
-              // Tempo event
-              final tempoValue = (data[offset + 3] << 16) | 
-                                (data[offset + 4] << 8) | 
-                                data[offset + 5];
-              tempo = 60000000 ~/ tempoValue;
-            }
-            
-            offset += 3 + metaLength;
-          } else if ((status & 0xF0) == 0xC0) {
-            // Program change
+          int status = data[offset];
+          int channel;
+
+          // Check for running status (data byte without a status byte)
+          if (status < 0x80) {
+            status = lastStatus;
+            // Don't increment offset, we need to read this byte as data
+          } else {
+            offset++;
+            lastStatus = status;
+          }
+          
+          channel = status & 0x0F;
+          final eventType = status & 0xF0;
+
+          if (eventType == 0x90) { // Note On
             if (offset + 1 >= data.length) break;
-            currentChannel = status & 0x0F;
-            currentProgram = data[offset + 1];
+            final note = data[offset];
+            final velocity = data[offset + 1];
             offset += 2;
-          } else if ((status & 0xF0) == 0x90) {
-            // Note on
-            if (offset + 2 >= data.length) break;
-            currentChannel = status & 0x0F;
-            final note = data[offset + 1];
-            final velocity = data[offset + 2];
             
             if (velocity > 0) {
-              // Note on
               activeNotes[note] = _ActiveNote(
                 startTime: currentTime,
-                channel: currentChannel,
+                channel: channel,
                 velocity: velocity,
               );
-            } else {
-              // Note off (velocity = 0)
+            } else { // Velocity 0 is a Note Off
               _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat, tempo);
             }
-            
-            offset += 3;
-          } else if ((status & 0xF0) == 0x80) {
-            // Note off
-            if (offset + 2 >= data.length) break;
-            currentChannel = status & 0x0F;
-            final note = data[offset + 1];
-            
-            _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat, tempo);
-            
-            offset += 3;
-          } else {
-            // Skip other events
+          } else if (eventType == 0x80) { // Note Off
+            if (offset + 1 >= data.length) break;
+            final note = data[offset];
+            // final velocity = data[offset + 1]; // We don't use the off velocity
             offset += 2;
+            _finalizeNote(activeNotes, note, currentTime, notes, ticksPerBeat, tempo);
+          } else if (eventType == 0xC0) { // Program Change
+            if (offset >= data.length) break;
+            currentProgram = data[offset];
+            offset += 1;
+          } else if (status == 0xFF) { // Meta Event
+            if (offset + 1 >= data.length) break;
+            final metaType = data[offset];
+            final metaLengthResult = _readVarInt(data, offset + 1);
+            offset = metaLengthResult.offset;
+            
+            if (metaType == 0x51 && offset + 2 < data.length) { // Set Tempo
+              final tempoValue = (data[offset] << 16) | (data[offset + 1] << 8) | data[offset + 2];
+              tempo = 60000000 ~/ tempoValue;
+            }
+            offset += metaLengthResult.value; // Skip the rest of the meta event data
+          } 
+          // --- CORRECTLY SKIP UNHANDLED EVENTS ---
+          else if (eventType == 0xA0 || eventType == 0xB0 || eventType == 0xE0) { // 2 data bytes
+              offset += 2;
+          } else if (eventType == 0xD0) { // 1 data byte
+              offset += 1;
           }
+          // This robustly handles all standard events, preventing the parser from desyncing.
         }
         
         // Finalize any remaining active notes
@@ -466,8 +471,6 @@ class _MIDIGeneratorHomeState extends State<MIDIGeneratorHome>
   Uint8List? _midiBytes;
 
   // Playback control
-  Timer? _playbackTimer;
-  int _currentNoteIndex = 0;
   final List<PlaybackNote> _playbackNotes = [];
 
   @override
@@ -677,115 +680,43 @@ G4 100 2.0''';
       return;
     }
 
-    setState(() => _isPlaying = true);
-    _playButtonController.forward();
-    _addLog('Starting playback...');
-    
-    _currentNoteIndex = 0;
-    
-    // Set up instruments for each channel
-    for (int i = 0; i < _currentMidiData!.tracks.length; i++) {
-      final track = _currentMidiData!.tracks[i];
-      _synthesizer!.selectPreset(channel: i, preset: track.program);
-    }
-    
-    // Start audio playback with synthesizer
-    try {
-      // Generate audio file for playback
-      await _generateAudioFile();
-      
-      // Play the generated audio file
+    setState(() => _isGenerating = true); // Use the generate spinner
+    _addLog('Generating audio for playback...');
+
+    // Generate the audio file FIRST
+    await _generateAudioFile();
+
+    setState(() {
+      _isGenerating = false;
       if (_currentAudioFile != null) {
-        await _audioPlayer.play(DeviceFileSource(_currentAudioFile!));
-      }
-      _addLog('Audio playback started');
-      
-      // Set up audio timer to generate samples
-      _audioTimer = Timer.periodic(const Duration(milliseconds: 10), (timer) {
-        if (_synthesizer != null && _isPlaying) {
-          // Create PCM buffer for audio output
-          final buffer = ArrayInt16.zeros(numShorts: 512);
-          _synthesizer!.renderMonoInt16(buffer);
-          // Store samples for continuous playback
-          final samples = Int16List(512);
-          for (int i = 0; i < 512; i++) {
-            samples[i] = buffer[i];
-          }
-          _audioBuffer.add(samples);
-        }
-      });
-    } catch (e) {
-      _addLog('Error starting audio playback: $e');
-      _stopPlayback();
-      return;
-    }
-    
-    final startTime = DateTime.now();
-    
-    _playbackTimer = Timer.periodic(const Duration(milliseconds: 10), (timer) {
-      if (!_isPlaying || _currentNoteIndex >= _playbackNotes.length) {
-        _stopPlayback();
-        return;
-      }
-      
-      final elapsedSeconds = DateTime.now().difference(startTime).inMilliseconds / 1000.0;
-      
-      while (_currentNoteIndex < _playbackNotes.length && 
-             _playbackNotes[_currentNoteIndex].time <= elapsedSeconds) {
-        
-        final note = _playbackNotes[_currentNoteIndex];
-        
-        if (note.isNoteOn) {
-          // Note On
-          _synthesizer!.noteOn(
-            channel: note.channel,
-            key: note.pitch,
-            velocity: note.velocity,
-          );
-          _addLog('Note ON: ${_pitchToNoteName(note.pitch)} (Ch${note.channel})');
-        } else {
-          // Note Off
-          _synthesizer!.noteOff(
-            channel: note.channel,
-            key: note.pitch,
-          );
-        }
-        
-        _currentNoteIndex++;
+        _isPlaying = true;
+        _playButtonController.forward();
       }
     });
+
+    if (_currentAudioFile != null) {
+      _addLog('Starting playback...');
+      // Simply play the generated file. No more timers needed here.
+      await _audioPlayer.play(DeviceFileSource(_currentAudioFile!));
+      // The audioplayers package can notify us when it's done.
+      _audioPlayer.onPlayerComplete.first.then((_) {
+        _addLog('Playback finished.');
+        if (mounted) {
+          _stopPlayback(); // Reset state when finished
+        }
+      });
+    } else {
+      _addLog('Failed to generate audio file for playback.');
+    }
   }
 
   void _stopPlayback() {
-    if (_playbackTimer != null) {
-      _playbackTimer!.cancel();
-      _playbackTimer = null;
-    }
-    
-    if (_audioTimer != null) {
-      _audioTimer!.cancel();
-      _audioTimer = null;
-    }
-    
+    // Much simpler now
     if (_isPlaying) {
+      _audioPlayer.stop();
       setState(() => _isPlaying = false);
       _playButtonController.reverse();
-      _addLog('Playback stopped');
-      
-      // Stop audio player
-      _audioPlayer.stop();
-      
-      // Stop all notes
-      if (_synthesizer != null) {
-        for (int channel = 0; channel < 16; channel++) {
-          for (int note = 0; note < 128; note++) {
-            _synthesizer!.noteOff(
-              channel: channel,
-              key: note,
-            );
-          }
-        }
-      }
+      _addLog('Playback stopped.');
     }
   }
 
@@ -800,28 +731,34 @@ G4 100 2.0''';
     if (_synthesizer == null || _currentMidiData == null) return;
     
     try {
-      // Calculate total duration
+      // --- CORRECTED DURATION CALCULATION ---
       double totalDuration = 0;
-      for (final track in _currentMidiData!.tracks) {
-        double trackDuration = 0;
-        for (final note in track.notes) {
-          trackDuration += note.duration;
-        }
-        if (trackDuration > totalDuration) {
-          totalDuration = trackDuration;
-        }
+      _preparePlaybackNotes(_currentMidiData!); // Use the timeline we already built!
+      if (_playbackNotes.isNotEmpty) {
+        // The total duration is the time of the very last event.
+        totalDuration = _playbackNotes.last.time + 0.5; // Add a little tail
       }
       
-      // Generate audio for the entire duration
-      final sampleRate = 44100;
-      final totalSamples = (totalDuration * sampleRate).round();
-      final buffer = ArrayInt16.zeros(numShorts: totalSamples);
-      
+      if (totalDuration <= 0) {
+        _addLog('Error: No notes to play, duration is zero.');
+        return;
+      }
+
+      _addLog('Rendering audio... Total duration: ${totalDuration.toStringAsFixed(2)}s');
+
+      // Reset synthesizer state
+      _synthesizer!.reset();
+
       // Set up instruments
       for (int i = 0; i < _currentMidiData!.tracks.length; i++) {
         final track = _currentMidiData!.tracks[i];
         _synthesizer!.selectPreset(channel: i, preset: track.program);
       }
+      
+      // Render the whole thing at once using the synthesizer directly
+      final sampleRate = _synthesizerSettings.sampleRate;
+      final totalSamples = (totalDuration * sampleRate).round();
+      final buffer = ArrayInt16.zeros(numShorts: totalSamples);
       
       // Create timeline of events
       final events = <TimelineEvent>[];
@@ -899,18 +836,20 @@ G4 100 2.0''';
         
         currentSample = blockEndSample;
       }
-      
+
       // Save to WAV file with unique name
       final timestamp = DateTime.now().millisecondsSinceEpoch;
       final fileName = 'temp_audio_$timestamp.wav';
-      final file = File(fileName);
+      final path = (await getTemporaryDirectory()).path;
+      final file = File('$path/$fileName');
       await file.writeAsBytes(_createWavHeader(sampleRate, totalSamples) + 
                              _arrayInt16ToBytes(buffer, totalSamples));
       
-      _currentAudioFile = fileName;
+      _currentAudioFile = file.path;
       _addLog('Generated audio file: ${file.lengthSync()} bytes');
-    } catch (e) {
-      _addLog('Error generating audio file: $e');
+    } catch (e, st) {
+      _addLog('Error generating audio file: $e\n$st');
+      _currentAudioFile = null;
     }
   }
 
@@ -1335,7 +1274,10 @@ class MIDIFileGenerator {
       
       int absoluteTicks = 0;
       for (final note in track.notes) {
-        final durationInTicks = (note.duration * writer.ticksPerBeat * (midiData.tempo / 60.0)).round();
+        // Convert duration from seconds to ticks, accounting for tempo
+        final double beatsPerSecond = midiData.tempo / 60.0;
+        final double durationInBeats = note.duration * beatsPerSecond;
+        final durationInTicks = (durationInBeats * writer.ticksPerBeat).round();
         writer.addNote(
           channel: i,
           pitch: note.pitch,
