@@ -1889,25 +1889,25 @@ C4+E4+G4 90 1.0''';
 
   void _preparePlaybackNotes(MIDIData midiData) {
     _playbackNotes.clear();
-
     
+    // FIXED: Process each track with proper channel separation and timing
     for (int trackIndex = 0; trackIndex < midiData.tracks.length; trackIndex++) {
       final track = midiData.tracks[trackIndex];
-      double trackTime = 0.0;
       
+      // FIXED: Each track maintains its own timing, don't accumulate across tracks
       for (final note in track.notes) {
         _playbackNotes.add(PlaybackNote(
-          time: trackTime,
+          time: note.startTime, // Use absolute start time from note
           pitch: note.pitch,
           velocity: note.velocity,
           duration: note.duration,
-          channel: trackIndex,
+          channel: trackIndex, // Each track gets its own channel
           program: track.program,
           isNoteOn: true,
         ));
         
         _playbackNotes.add(PlaybackNote(
-          time: trackTime + note.duration,
+          time: note.startTime + note.duration, // Absolute end time
           pitch: note.pitch,
           velocity: 0,
           duration: 0,
@@ -1915,14 +1915,12 @@ C4+E4+G4 90 1.0''';
           program: track.program,
           isNoteOn: false,
         ));
-        
-        trackTime += note.duration;
       }
     }
     
     // Sort by time
     _playbackNotes.sort((a, b) => a.time.compareTo(b.time));
-    _addLog('Prepared ${_playbackNotes.length} playback events');
+    _addLog('Prepared ${_playbackNotes.length} playback events across ${midiData.tracks.length} channels');
   }
 
   Future<void> _playMIDI() async {
