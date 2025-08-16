@@ -383,76 +383,103 @@ class MIDIToTextConverter {
   static MIDIData _parseMidiFile(Uint8List bytes) {
     final data = bytes;
     int offset = 0;
-    
+
     // Check MIDI header
     if (data.length < 14 || 
         String.fromCharCodes(data.sublist(0, 4)) != 'MThd') {
       throw FormatException('Invalid MIDI file header');
     }
-    
+
     // Parse header chunk
     final headerLength = _readInt32(data, 4);
     final format = _readInt16(data, 8);
     final numTracks = _readInt16(data, 10);
     final timeDivision = _readInt16(data, 12);
-    
-    // Validate header (these variables are used for validation)
-    if (headerLength != 6 || format != 1) {
-      throw FormatException('Unsupported MIDI format');
+
+    // Support multiple MIDI formats (0, 1, and 2)
+    if (headerLength < 6 || format > 2) {
+      throw FormatException('Unsupported MIDI format: $format');
     }
-    
-    // Use timeDivision for ticks per beat calculation
-    final ticksPerBeat = timeDivision;
-    
+
+    // Handle different time division formats
+    int ticksPerBeat;
+    if (timeDivision & 0x8000 == 0) {
+      // Ticks per quarter note
+      ticksPerBeat = timeDivision;
+    } else {
+      // SMPTE format - convert to approximate ticks per beat
+      final framesPerSecond = -(timeDivision >> 8);
+      final ticksPerFrame = timeDivision & 0xFF;
+      ticksPerBeat = (framesPerSecond * ticksPerFrame * 2).toInt(); // Approximate conversion
+    }
+
     offset = 14; // Skip header chunk
-    
+
     final tracks = <MIDITrack>[];
-    int tempo = 120;
-    
+    int globalTempo = 120;
+
     for (int trackIndex = 0; trackIndex < numTracks; trackIndex++) {
       if (offset >= data.length) break;
       
-      // Check for track chunk
-      if (offset + 4 <= data.length && 
-          String.fromCharCodes(data.sublist(offset, offset + 4)) == 'MTrk') {
-        
-        final trackLength = _readInt32(data, offset + 4);
-        offset += 8; // Skip track header
-        final trackEnd = offset + trackLength;
-        
-        final notes = <MIDINote>[];
-        int currentTime = 0;
-        int currentProgram = 0;
-        final activeNotes = <int, _ActiveNote>{};
-        
-        int lastStatus = 0; // For running status
+      // Find next track chunk (some files may have extra chunks)
+      while (offset + 8 <= data.length && 
+             String.fromCharCodes(data.sublist(offset, offset + 4)) != 'MTrk') {
+        // Skip unknown chunks
+        if (offset + 8 <= data.length) {
+          final chunkLength = _readInt32(data, offset + 4);
+          offset += 8 + chunkLength;
+        } else {
+          offset++;
+        }
+      }
+      
+      if (offset + 8 > data.length) break;
+      
+      final trackLength = _readInt32(data, offset + 4);
+      offset += 8; // Skip track header
+      final trackEnd = offset + trackLength;
+      
+      final notes = <MIDINote>[];
+      int currentTime = 0;
+      int currentProgram = 0;
+      final activeNotes = <int, _ActiveNote>{};
+      
+      int lastStatus = 0; // For running status
+      final channelPrograms = List<int>.filled(16, 0); // Track program per channel
 
-        while (offset < trackEnd && offset < data.length) {
-          final deltaTimeResult = _readVarInt(data, offset);
-          final deltaTime = deltaTimeResult.value;
-          offset = deltaTimeResult.offset;
-          
-          if (offset >= trackEnd || offset >= data.length) break;
-          
-          currentTime += deltaTime;
-          
-          int status = data[offset];
-          int channel;
+      while (offset < trackEnd && offset < data.length) {
+        // Read delta time with better error handling
+        final deltaTimeResult = _readVarIntSafe(data, offset, trackEnd);
+        if (deltaTimeResult == null) break;
+        
+        final deltaTime = deltaTimeResult.value;
+        offset = deltaTimeResult.offset;
+        
+        if (offset >= trackEnd || offset >= data.length) break;
+        
+        currentTime += deltaTime;
+        
+        int status = data[offset];
+        int channel = 0;
 
-          // Check for running status (data byte without a status byte)
-          if (status < 0x80) {
-            status = lastStatus;
-            // Don't increment offset, we need to read this byte as data
-          } else {
-            offset++;
+        // Handle running status more robustly
+        if (status < 0x80) {
+          status = lastStatus;
+          if (status == 0) break; // No previous status byte
+          // Don't increment offset, we need to read this byte as data
+        } else {
+          offset++;
+          if (status != 0xFF) { // Don't update running status for meta events
             lastStatus = status;
           }
-          
-          channel = status & 0x0F;
-          final eventType = status & 0xF0;
+        }
+        
+        channel = status & 0x0F;
+        final eventType = status & 0xF0;
 
+        try {
           if (eventType == 0x90) { // Note On
-            if (offset + 1 >= data.length) break;
+            if (offset + 1 >= trackEnd) break;
             final note = data[offset];
             final velocity = data[offset + 1];
             offset += 2;
@@ -466,62 +493,92 @@ class MIDIToTextConverter {
                 velocity: velocity,
               );
             } else {
+              // Note on with velocity 0 = note off
               final noteKey = note | (channel << 8);
-              _finalizeNote(activeNotes, noteKey, note, currentTime, notes, ticksPerBeat, tempo);
+              _finalizeNote(activeNotes, noteKey, note, currentTime, notes, 
+                           ticksPerBeat, globalTempo, channelPrograms[channel]);
             }
           } else if (eventType == 0x80) { // Note Off
-            if (offset + 1 >= data.length) break;
+            if (offset + 1 >= trackEnd) break;
             final note = data[offset];
-            offset += 2;
+            offset += 2; // Skip velocity byte
             final noteKey = note | (channel << 8);
-            _finalizeNote(activeNotes, noteKey, note, currentTime, notes, ticksPerBeat, tempo);
+            _finalizeNote(activeNotes, noteKey, note, currentTime, notes, 
+                         ticksPerBeat, globalTempo, channelPrograms[channel]);
           } else if (eventType == 0xC0) { // Program Change
-            if (offset >= data.length) break;
-            currentProgram = data[offset];
+            if (offset >= trackEnd) break;
+            final program = data[offset];
+            channelPrograms[channel] = program;
+            if (channel == 0 || currentProgram == 0) {
+              currentProgram = program; // Use channel 0 or first program found
+            }
             offset += 1;
           } else if (status == 0xFF) { // Meta Event
-            if (offset + 1 >= data.length) break;
+            if (offset >= trackEnd) break;
             final metaType = data[offset];
-            final metaLengthResult = _readVarInt(data, offset + 1);
-            offset = metaLengthResult.offset;
+            offset++;
             
-            if (metaType == 0x51 && offset + 2 < data.length) { // Set Tempo
-              final tempoValue = (data[offset] << 16) | (data[offset + 1] << 8) | data[offset + 2];
-              tempo = 60000000 ~/ tempoValue;
+            final metaLengthResult = _readVarIntSafe(data, offset, trackEnd);
+            if (metaLengthResult == null) break;
+            
+            offset = metaLengthResult.offset;
+            final metaLength = metaLengthResult.value;
+            
+            if (offset + metaLength > trackEnd) break;
+            
+            if (metaType == 0x51 && metaLength >= 3) { // Set Tempo
+              final tempoValue = (data[offset] << 16) | 
+                               (data[offset + 1] << 8) | 
+                               data[offset + 2];
+              globalTempo = 60000000 ~/ tempoValue;
             }
-            offset += metaLengthResult.value; // Skip the rest of the meta event data
-          } 
-          // --- CORRECTLY SKIP UNHANDLED EVENTS ---
-          else if (eventType == 0xA0 || eventType == 0xB0 || eventType == 0xE0) { // 2 data bytes
-              offset += 2;
-          } else if (eventType == 0xD0) { // 1 data byte
-              offset += 1;
+            offset += metaLength;
+          } else if (eventType == 0xA0 || eventType == 0xB0 || eventType == 0xE0) {
+            // Aftertouch, Control Change, Pitch Bend - 2 data bytes
+            offset += 2;
+          } else if (eventType == 0xD0) {
+            // Channel Pressure - 1 data byte
+            offset += 1;
+          } else if (status >= 0xF0 && status < 0xFF) {
+            // System messages - handle variable lengths
+            if (status == 0xF0) { // SysEx
+              while (offset < trackEnd && data[offset] != 0xF7) {
+                offset++;
+              }
+              if (offset < trackEnd) offset++; // Skip 0xF7
+            } else {
+              // Other system messages typically have no data or are handled elsewhere
+              offset++;
+            }
+          } else {
+            // Unknown event type - try to skip safely
+            offset++;
           }
-          // This robustly handles all standard events, preventing the parser from desyncing.
+        } catch (e) {
+          // If we encounter an error, try to continue
+          print('Warning: Error parsing MIDI event at offset $offset: $e');
+          offset++;
+          continue;
         }
-        
-        // Finalize any remaining active notes
-        for (final noteKey in activeNotes.keys.toList()) {
-          final notePitch = noteKey & 0xFF; // Extract original note pitch
-          _finalizeNote(activeNotes, noteKey, notePitch, currentTime, notes, ticksPerBeat, tempo);
-        }
-        
-        if (notes.isNotEmpty) {
-          tracks.add(MIDITrack(
-            instrument: _getInstrumentName(currentProgram),
-            program: currentProgram,
-            notes: notes,
-          ));
-        }
-        
-        // Move to next track
-        offset = trackEnd;
-      } else {
-        offset++;
+      }
+      
+      // Finalize any remaining active notes
+      for (final noteKey in activeNotes.keys.toList()) {
+        final notePitch = noteKey & 0xFF;
+        _finalizeNote(activeNotes, noteKey, notePitch, currentTime, notes, 
+                     ticksPerBeat, globalTempo, currentProgram);
+      }
+      
+      if (notes.isNotEmpty) {
+        tracks.add(MIDITrack(
+          instrument: _getInstrumentName(currentProgram),
+          program: currentProgram,
+          notes: notes,
+        ));
       }
     }
-    
-    return MIDIData(tempo: tempo, tracks: tracks);
+
+    return MIDIData(tempo: globalTempo, tracks: tracks);
   }
 
   static void _finalizeNote(
@@ -531,19 +588,22 @@ class MIDIToTextConverter {
     int currentTime, 
     List<MIDINote> notes, 
     int ticksPerBeat, 
-    int tempo
+    int tempo,
+    int program, // Add program parameter
   ) {
     final activeNote = activeNotes.remove(noteKey);
     if (activeNote != null) {
       final durationInTicks = currentTime - activeNote.startTime;
-      final durationInBeats = durationInTicks / ticksPerBeat.toDouble();
-      final durationInSeconds = durationInBeats * (60.0 / tempo);
-      notes.add(MIDINote(
-        pitch: notePitch,
-        velocity: activeNote.velocity,
-        startTime: activeNote.startTime / ticksPerBeat * (60.0/tempo),
-        duration: durationInSeconds,
-      ));
+      if (durationInTicks > 0) { // Only add notes with positive duration
+        final durationInBeats = durationInTicks / ticksPerBeat.toDouble();
+        final durationInSeconds = durationInBeats * (60.0 / tempo);
+        notes.add(MIDINote(
+          pitch: notePitch,
+          velocity: activeNote.velocity,
+          startTime: activeNote.startTime / ticksPerBeat * (60.0/tempo),
+          duration: durationInSeconds.clamp(0.01, double.infinity), // Minimum duration
+        ));
+      }
     }
   }
 
@@ -565,6 +625,26 @@ class MIDIToTextConverter {
       if ((byte & 0x80) == 0) break;
     }
     
+    return _VarIntResult(value: value, offset: currentOffset);
+  }
+
+  // Add this new safe variable-length integer reader
+  static _VarIntResult? _readVarIntSafe(Uint8List data, int offset, int maxOffset) {
+    int value = 0;
+    int currentOffset = offset;
+    int bytesRead = 0;
+
+    while (currentOffset < data.length && currentOffset < maxOffset) {
+      final byte = data[currentOffset++];
+      bytesRead++;
+      
+      // Prevent infinite loops with malformed data
+      if (bytesRead > 4) return null;
+      
+      value = (value << 7) | (byte & 0x7F);
+      if ((byte & 0x80) == 0) break;
+    }
+
     return _VarIntResult(value: value, offset: currentOffset);
   }
 }
