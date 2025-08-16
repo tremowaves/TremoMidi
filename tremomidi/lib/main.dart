@@ -377,7 +377,9 @@ class MIDIToTextConverter {
   }
 
   static String _getInstrumentName(int program) {
-    return _instruments[program] ?? 'Acoustic Grand Piano';
+    // Ensure program is within valid range (0-127)
+    final validProgram = program.clamp(0, 127);
+    return _instruments[validProgram] ?? 'Acoustic Grand Piano';
   }
 
   static MIDIData _parseMidiFile(Uint8List bytes) {
@@ -439,13 +441,19 @@ class MIDIToTextConverter {
       offset += 8; // Skip track header
       final trackEnd = offset + trackLength;
       
-      final notes = <MIDINote>[];
-      int currentTime = 0;
-      int currentProgram = 0;
-      final activeNotes = <int, _ActiveNote>{};
-      
-      int lastStatus = 0; // For running status
-      final channelPrograms = List<int>.filled(16, 0); // Track program per channel
+              final notes = <MIDINote>[];
+        int currentTime = 0;
+        int currentProgram = 0; // Default to Acoustic Grand Piano
+        final activeNotes = <int, _ActiveNote>{};
+        
+        int lastStatus = 0; // For running status
+        final channelPrograms = List<int>.filled(16, 0); // Track program per channel
+        
+        // Ensure channel 0 always has a valid program
+        channelPrograms[0] = 0; // Acoustic Grand Piano
+        
+        // Debug logging for program changes
+        print('DEBUG: Track $trackIndex - Initial program: $currentProgram');
 
       while (offset < trackEnd && offset < data.length) {
         // Read delta time with better error handling
@@ -508,10 +516,13 @@ class MIDIToTextConverter {
           } else if (eventType == 0xC0) { // Program Change
             if (offset >= trackEnd) break;
             final program = data[offset];
-            channelPrograms[channel] = program;
+            // Ensure program is within valid range (0-127)
+            final validProgram = program.clamp(0, 127);
+            channelPrograms[channel] = validProgram;
             if (channel == 0 || currentProgram == 0) {
-              currentProgram = program; // Use channel 0 or first program found
+              currentProgram = validProgram; // Use channel 0 or first program found
             }
+            print('DEBUG: Program Change - Channel: $channel, Program: $program -> $validProgram, Current: $currentProgram');
             offset += 1;
           } else if (status == 0xFF) { // Meta Event
             if (offset >= trackEnd) break;
@@ -570,14 +581,23 @@ class MIDIToTextConverter {
       }
       
       if (notes.isNotEmpty) {
+        // Ensure we have a valid program number
+        final finalProgram = currentProgram.clamp(0, 127);
+        print('DEBUG: Creating track - Program: $currentProgram -> $finalProgram, Instrument: ${_getInstrumentName(finalProgram)}, Notes: ${notes.length}');
         tracks.add(MIDITrack(
-          instrument: _getInstrumentName(currentProgram),
-          program: currentProgram,
+          instrument: _getInstrumentName(finalProgram),
+          program: finalProgram,
           notes: notes,
         ));
       }
     }
 
+    print('DEBUG: MIDI parsing complete - Tempo: $globalTempo, Tracks: ${tracks.length}');
+    for (int i = 0; i < tracks.length; i++) {
+      final track = tracks[i];
+      print('DEBUG: Track $i - Program: ${track.program}, Instrument: ${track.instrument}, Notes: ${track.notes.length}');
+    }
+    
     return MIDIData(tempo: globalTempo, tracks: tracks);
   }
 
@@ -903,7 +923,25 @@ C4+E4+G4 90 1.0''';
       for (int i = 0; i < midiData.tracks.length; i++) {
         final track = midiData.tracks[i];
         _synthesizer!.noteOffAll(channel: i, immediate: true);
-        _synthesizer!.selectPreset(channel: i, preset: track.program);
+        
+        // Ensure program is within valid range and handle errors gracefully
+        final program = track.program.clamp(0, 127);
+        
+        // Check if the preset is available, if not, fall back to Acoustic Grand Piano
+        int finalProgram = program;
+        if (!_isPresetAvailable(program)) {
+          _addLog('Warning: Preset $program (${track.instrument}) not available, falling back to Acoustic Grand Piano');
+          finalProgram = 0;
+        }
+        
+        try {
+          _synthesizer!.selectPreset(channel: i, preset: finalProgram);
+          final instrumentName = finalProgram == program ? track.instrument : 'Acoustic Grand Piano';
+          _addLog('Channel $i: Set instrument $instrumentName (program $finalProgram)');
+        } catch (e) {
+          _addLog('Error: Failed to set preset $finalProgram on channel $i: $e');
+          // Try to continue with the current preset
+        }
       }
       
       final sampleRate = _synthesizerSettings.sampleRate;
@@ -1006,21 +1044,42 @@ C4+E4+G4 90 1.0''';
         type: FileType.custom, allowedExtensions: ['mid', 'midi'], allowMultiple: true);
 
     if (result != null && result.files.isNotEmpty) {
+      int successCount = 0;
+      int errorCount = 0;
+      
       for (final file in result.files) {
         if (file.path != null && !_playlist.any((item) => item.filePath == file.path)) {
+          try {
             final bytes = await File(file.path!).readAsBytes();
             final midiData = MIDIToTextConverter._parseMidiFile(bytes);
             final duration = _calculateMidiDuration(midiData);
-
-            _playlist.add(MIDIPlaylistItem(
-                fileName: file.name,
-                filePath: file.path!,
-                duration: duration,
-            ));
+            
+            if (duration > 0) {
+              _playlist.add(MIDIPlaylistItem(
+                  fileName: file.name,
+                  filePath: file.path!,
+                  duration: duration,
+              ));
+              successCount++;
+              _addLog('Loaded: ${file.name} (${duration.toStringAsFixed(2)}s)');
+            } else {
+              _addLog('Warning: ${file.name} has no valid notes or zero duration');
+              errorCount++;
+            }
+          } catch (e) {
+            _addLog('Error loading ${file.name}: $e');
+            errorCount++;
+          }
         }
       }
+      
       setState(() {});
-      _addLog('Loaded ${result.files.length} MIDI files.');
+      if (successCount > 0) {
+        _addLog('Successfully loaded $successCount MIDI files.');
+      }
+      if (errorCount > 0) {
+        _addLog('Failed to load $errorCount MIDI files.');
+      }
     }
   }
 
@@ -1037,6 +1096,9 @@ C4+E4+G4 90 1.0''';
           (entity.path.endsWith('.mid') || entity.path.endsWith('.midi'))
         ).toList();
 
+        int successCount = 0;
+        int errorCount = 0;
+        
         for (final file in files) {
           if (file is File) {
             final fileName = file.path.split(Platform.pathSeparator).last;
@@ -1045,21 +1107,38 @@ C4+E4+G4 90 1.0''';
             // Check if file already exists in playlist
             final exists = _playlist.any((item) => item.filePath == filePath);
             if (!exists) {
-              final bytes = await file.readAsBytes();
-              final midiData = MIDIToTextConverter._parseMidiFile(bytes);
-              final duration = _calculateMidiDuration(midiData);
-              
-              _playlist.add(MIDIPlaylistItem(
-                fileName: fileName,
-                filePath: filePath,
-                duration: duration,
-              ));
+              try {
+                final bytes = await file.readAsBytes();
+                final midiData = MIDIToTextConverter._parseMidiFile(bytes);
+                final duration = _calculateMidiDuration(midiData);
+                
+                if (duration > 0) {
+                  _playlist.add(MIDIPlaylistItem(
+                    fileName: fileName,
+                    filePath: filePath,
+                    duration: duration,
+                  ));
+                  successCount++;
+                  _addLog('Loaded: $fileName (${duration.toStringAsFixed(2)}s)');
+                } else {
+                  _addLog('Warning: $fileName has no valid notes or zero duration');
+                  errorCount++;
+                }
+              } catch (e) {
+                _addLog('Error loading $fileName: $e');
+                errorCount++;
+              }
             }
           }
         }
         
         setState(() {});
-        _addLog('Loaded ${files.length} MIDI files from folder');
+        if (successCount > 0) {
+          _addLog('Successfully loaded $successCount MIDI files from folder');
+        }
+        if (errorCount > 0) {
+          _addLog('Failed to load $errorCount MIDI files from folder');
+        }
       }
     } catch (e) {
       _addLog('Error loading MIDI folder: $e');
@@ -1649,12 +1728,17 @@ C4+E4+G4 90 1.0''';
       } catch (e) {
         // If loading fails, try with more lenient settings
         _addLog('Warning: SoundFont loading failed, trying with alternative settings...');
-        _synthesizerSettings = SynthesizerSettings(
-          sampleRate: 22050, // Lower sample rate
-          maximumPolyphony: 64, // Lower polyphony
-          blockSize: 32, // Smaller block size
-        );
-        synthesizer = Synthesizer.loadByteData(bytes, _synthesizerSettings);
+        try {
+          _synthesizerSettings = SynthesizerSettings(
+            sampleRate: 22050, // Lower sample rate
+            maximumPolyphony: 64, // Lower polyphony
+            blockSize: 32, // Smaller block size
+          );
+          synthesizer = Synthesizer.loadByteData(bytes, _synthesizerSettings);
+        } catch (fallbackError) {
+          _addLog('Error: Even fallback settings failed: $fallbackError');
+          rethrow; // Re-throw the original error if fallback also fails
+        }
       }
       
       setState(() {
@@ -1666,9 +1750,24 @@ C4+E4+G4 90 1.0''';
       
       _checkAvailablePresets();
       _initializeAudioStream();
+      
+      // Test if basic preset 0 (Acoustic Grand Piano) is available
+      if (!_isPresetAvailable(0)) {
+        _addLog('Warning: Acoustic Grand Piano (preset 0) is not available in this SoundFont');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Warning: Acoustic Grand Piano not available in SoundFont')),
+          );
+        }
+      }
     } catch (e) {
       setState(() => _isLoadingSoundFont = false);
       _addLog('Error loading SoundFont: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading SoundFont: $e')),
+        );
+      }
     }
   }
 
@@ -1687,6 +1786,23 @@ C4+E4+G4 90 1.0''';
         print('DEBUG: Preset $program failed: $e');
       }
     }
+    
+    // Log the results
+    _addLog('SoundFont preset check completed. Basic instruments tested.');
+  }
+  
+  /// Check if a specific preset is available in the SoundFont
+  bool _isPresetAvailable(int preset) {
+    if (_synthesizer == null) return false;
+    
+    try {
+      _synthesizer!.selectPreset(channel: 15, preset: preset); // Use channel 15 for testing
+      _synthesizer!.noteOffAll(channel: 15, immediate: true); // Clean up
+      return true;
+    } catch (e) {
+      print('DEBUG: Preset $preset not available: $e');
+      return false;
+    }
   }
 
   void _initializeAudioStream() {
@@ -1698,6 +1814,11 @@ C4+E4+G4 90 1.0''';
       _addLog('Audio stream initialized with audioplayers');
     } catch (e) {
       _addLog('Error initializing audio stream: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error initializing audio stream: $e')),
+        );
+      }
     }
   }
 
@@ -1721,6 +1842,11 @@ C4+E4+G4 90 1.0''';
       }
     } catch (e) {
       _addLog('Error selecting SoundFont: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error selecting SoundFont: $e')),
+        );
+      }
     }
   }
 
@@ -1811,11 +1937,18 @@ C4+E4+G4 90 1.0''';
       return;
     }
     
-    _currentAudioFile = await _generateAudioFromMidiData(_currentMidiData!);
-    
-    if (_currentAudioFile != null) {
-      await _audioPlayer.play(DeviceFileSource(_currentAudioFile!));
-      setState(() => _isPlaying = true);
+    try {
+      _currentAudioFile = await _generateAudioFromMidiData(_currentMidiData!);
+      
+      if (_currentAudioFile != null) {
+        await _audioPlayer.play(DeviceFileSource(_currentAudioFile!));
+        setState(() => _isPlaying = true);
+        _addLog('MIDI playback started successfully');
+      } else {
+        _addLog('Error: Could not generate audio for playback.');
+      }
+    } catch (e) {
+      _addLog('Error playing MIDI: $e');
     }
   }
 
@@ -1951,7 +2084,18 @@ C4+E4+G4 90 1.0''';
       return text;
     } catch (e) {
       _addLog('Error converting MIDI: $e');
-      rethrow;
+      // Return a basic template instead of rethrowing
+      return '''tempo: 120
+instrument: Acoustic Grand Piano
+
+C4 100 1.0
+D4 100 1.0
+E4 100 1.0
+F4 100 1.0
+G4 100 1.0
+A4 100 1.0
+B4 100 1.0
+C5 100 1.0''';
     }
   }
 
