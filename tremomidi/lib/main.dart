@@ -670,6 +670,17 @@ class _MIDIGeneratorHomeState extends State<MIDIGeneratorHome>
   // Playback control
   final List<PlaybackNote> _playbackNotes = [];
 
+  // MIDI Player Tab
+  int _currentTabIndex = 0;
+  final List<MIDIPlaylistItem> _playlist = [];
+  int _currentPlaylistIndex = -1;
+  bool _isPlayerPlaying = false;
+  bool _isPlayerPaused = false;
+  double _playerPosition = 0.0;
+  double _playerDuration = 0.0;
+  Timer? _playerTimer;
+  String? _currentPlayerAudioFile;
+
   @override
   void initState() {
     super.initState();
@@ -689,123 +700,59 @@ class _MIDIGeneratorHomeState extends State<MIDIGeneratorHome>
     _textController.text = '''tempo: 140
 instrument: Acoustic Grand Piano
 
-
 C4 100 0.5
 D4 100 0.5
-Eb4 100 0.5
-F4 100 0.5
-G4 100 0.5
-Ab4 100 0.5
-Bb4 100 0.5
-C5 100 1.0
-
-
-C4 80 1.0
-D4 80 1.0
-Eb4 80 1.0
-F4 80 1.0
-
-
-C4+Eb4+G4 90 1.0
-D4+F4+Ab4 90 1.0
-Eb4+G4+Bb4 90 1.0
-F4+Ab4+C5 90 1.0
-G4+Bb4+D5 90 1.0
-Ab4+C5+Eb5 90 1.0
-Bb4+D5+F5 90 1.0
-C5+Eb5+G5 90 1.0
-
-instrument: Acoustic Guitar (nylon)
-
-
-C3 85 0.75
-D3 85 0.75
-Eb3 85 0.75
-F3 85 0.75
-G3 85 0.75
-Ab3 85 0.75
-Bb3 85 0.75
-C4 85 1.5
-
-
-C3+Eb3+G3 80 1.0
-D3+F3+Ab3 80 1.0
-Eb3+G3+Bb3 80 1.0
-F3+Ab3+C4 80 1.0
-
-instrument: Violin
-
-
-C5 95 0.5
-D5 95 0.5
-Eb5 95 0.5
-F5 95 0.5
-G5 95 0.5
-Ab5 95 0.5
-Bb5 95 0.5
-C6 95 1.0
-
-
-E5 85 1.0
-F5 85 1.0
-G5 85 1.0
-Ab5 85 1.0
-
-instrument: Trumpet
-
-
-C4 100 0.5
-D4 100 0.5
-Eb4 100 0.5
-F4 100 0.5
-G4 100 0.5
-Ab4 100 0.5
-Bb4 100 0.5
-C5 100 1.0
-
-
-C4+Eb4+G4 110 0.25
-D4+F4+Ab4 110 0.25
-Eb4+G4+Bb4 110 0.25
-F4+Ab4+C5 110 0.25
-
-instrument: Flute
-
-
-C6 90 0.75
-D6 90 0.75
-Eb6 90 0.75
-F6 90 0.75
-G6 90 0.75
-Ab6 90 0.75
-Bb6 90 0.75
-C7 90 1.5
-
-
-E6 80 1.0
-F6 80 1.0
-G6 80 1.0
-Ab6 80 1.0
-
-instrument: Acoustic Grand Piano
-
-
-C4+Eb4+G4+C5 95 2.0
-D4+F4+Ab4+D5 95 2.0
-Eb4+G4+Bb4+Eb5 95 2.0
-F4+Ab4+C5+F5 95 2.0
-G4+Bb4+D5+G5 95 2.0
-Ab4+C5+Eb5+Ab5 95 2.0
-Bb4+D5+F5+Bb5 95 2.0
-C5+Eb5+G5+C6 95 3.0''';
+E4 100 0.5
+C4+E4+G4 90 1.0''';
 
     _loadSoundFont();
+
+    // Listen to player state changes to manage UI correctly
+    _audioPlayer.onPlayerStateChanged.listen((state) {
+      if (!mounted) return;
+      
+      // Handle player state for both tabs
+      final isCurrentlyPlaying = state == PlayerState.playing;
+      
+      if (_currentTabIndex == 1) { // Player Tab
+        setState(() {
+          _isPlayerPlaying = isCurrentlyPlaying;
+          if (state == PlayerState.completed) {
+            _onPlayerComplete();
+          }
+        });
+      } else { // Generator Tab
+         setState(() {
+          _isPlaying = isCurrentlyPlaying;
+        });
+      }
+    });
+
+     _audioPlayer.onPositionChanged.listen((position) {
+        if (!mounted || !_isPlayerPlaying || _isPlayerPaused) return;
+        if (_currentTabIndex == 1) { // Only update slider for MIDI Player
+             setState(() {
+                _playerPosition = position.inMilliseconds / 1000.0;
+            });
+        }
+    });
+
+    _audioPlayer.onDurationChanged.listen((duration) {
+       if (!mounted) return;
+        if (_currentTabIndex == 1) {
+             setState(() {
+                _playerDuration = duration.inMilliseconds / 1000.0;
+            });
+        }
+    });
   }
 
   @override
   void dispose() {
     _stopPlayback();
+    _stopPlayerPlayback();
     _audioTimer?.cancel();
+    _playerTimer?.cancel();
     _audioPlayer.dispose();
     _generateButtonController.dispose();
     _playButtonController.dispose();
@@ -830,6 +777,745 @@ C5+Eb5+G5+C6 95 3.0''';
     } catch (e) {
       // Ignore cleanup errors
     }
+  }
+
+  // --- General Audio Generation (Refactored and Corrected) ---
+
+  /// **FIXED**: Calculates the true duration of MIDI data by finding the last note-off event.
+  double _calculateMidiDuration(MIDIData midiData) {
+    double maxTime = 0.0;
+    if (midiData.tracks.isEmpty) return 0.0;
+
+    for (final track in midiData.tracks) {
+      for (final note in track.notes) {
+        final noteEndTime = note.startTime + note.duration;
+        if (noteEndTime > maxTime) {
+          maxTime = noteEndTime;
+        }
+      }
+    }
+    return maxTime;
+  }
+  
+  /// **REFACTORED**: A single, reliable function to generate a WAV file from MIDIData.
+  Future<String?> _generateAudioFromMidiData(MIDIData midiData) async {
+    if (_synthesizer == null) {
+      _addLog('Error: SoundFont not loaded.');
+      return null;
+    }
+
+    setState(() => _isGenerating = true);
+
+    try {
+      final totalDuration = _calculateMidiDuration(midiData);
+      if (totalDuration <= 0) {
+        _addLog('Warning: MIDI has no notes or zero duration.');
+        return null;
+      }
+      
+      // Add a 1-second tail for reverb/decay
+      final renderDuration = totalDuration + 1.0; 
+      _addLog('Rendering audio... Duration: ${renderDuration.toStringAsFixed(2)}s');
+
+      _synthesizer!.reset();
+
+      // Set up instruments for each channel
+      for (int i = 0; i < midiData.tracks.length; i++) {
+        final track = midiData.tracks[i];
+        _synthesizer!.noteOffAll(channel: i, immediate: true);
+        _synthesizer!.selectPreset(channel: i, preset: track.program);
+      }
+      
+      final sampleRate = _synthesizerSettings.sampleRate;
+      final totalSamples = (renderDuration * sampleRate).round();
+      final buffer = ArrayInt16.zeros(numShorts: totalSamples);
+      
+      // Create a timeline of all note-on and note-off events
+      final events = <TimelineEvent>[];
+      for (int trackIndex = 0; trackIndex < midiData.tracks.length; trackIndex++) {
+        final track = midiData.tracks[trackIndex];
+        for (final note in track.notes) {
+          events.add(TimelineEvent(
+            time: note.startTime, type: EventType.noteOn,
+            channel: trackIndex, pitch: note.pitch, velocity: note.velocity,
+          ));
+          events.add(TimelineEvent(
+            time: note.startTime + note.duration, type: EventType.noteOff,
+            channel: trackIndex, pitch: note.pitch, velocity: 0,
+          ));
+        }
+      }
+      
+      events.sort((a, b) => a.time.compareTo(b.time));
+      
+      int currentSample = 0;
+      int eventIndex = 0;
+      final samplesPerBlock = _synthesizerSettings.blockSize;
+      
+      // Process audio in blocks, triggering MIDI events at the correct time
+      while (currentSample < totalSamples) {
+        final blockEndSample = (currentSample + samplesPerBlock).clamp(0, totalSamples);
+        final currentTime = currentSample / sampleRate;
+        final blockEndTime = blockEndSample / sampleRate;
+        
+        while (eventIndex < events.length && events[eventIndex].time < blockEndTime) {
+          final event = events[eventIndex];
+          if (event.time >= currentTime) {
+            if (event.type == EventType.noteOn) {
+              _synthesizer!.noteOn(channel: event.channel, key: event.pitch, velocity: event.velocity);
+            } else {
+              _synthesizer!.noteOff(channel: event.channel, key: event.pitch);
+            }
+          }
+          eventIndex++;
+        }
+        
+        final blockBuffer = ArrayInt16.zeros(numShorts: samplesPerBlock);
+        _synthesizer!.renderMonoInt16(blockBuffer);
+        
+        for (int i = 0; i < samplesPerBlock && currentSample + i < totalSamples; i++) {
+          buffer[currentSample + i] = blockBuffer[i];
+        }
+        
+        currentSample = blockEndSample;
+      }
+
+      // Save to a uniquely named WAV file
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final tempDir = await getTemporaryDirectory();
+      final file = File('${tempDir.path}/temp_audio_$timestamp.wav');
+      
+      await file.writeAsBytes(_createWavHeader(sampleRate, totalSamples) + 
+                             _arrayInt16ToBytes(buffer, totalSamples));
+      
+      _addLog('Generated audio file: ${file.path}');
+      return file.path;
+
+    } catch (e, st) {
+      _addLog('Error generating audio: $e\n$st');
+      return null;
+    } finally {
+      if (mounted) setState(() => _isGenerating = false);
+    }
+  }
+
+  // MIDI Player Methods
+  void _stopPlayerPlayback() {
+    _playerTimer?.cancel();
+    if (_isPlayerPlaying) {
+      _audioPlayer.stop();
+      setState(() {
+        _isPlayerPlaying = false;
+        _isPlayerPaused = false;
+        _playerPosition = 0.0;
+      });
+    }
+  }
+
+  void _onPlayerComplete() {
+    // Play the next song automatically, or stop if at the end of the playlist.
+    if (_currentPlaylistIndex < _playlist.length - 1) {
+      _playPlaylistItem(_currentPlaylistIndex + 1);
+    } else {
+      _stopPlayer();
+    }
+  }
+
+  Future<void> _loadMIDIFiles() async {
+    final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom, allowedExtensions: ['mid', 'midi'], allowMultiple: true);
+
+    if (result != null && result.files.isNotEmpty) {
+      for (final file in result.files) {
+        if (file.path != null && !_playlist.any((item) => item.filePath == file.path)) {
+            final bytes = await File(file.path!).readAsBytes();
+            final midiData = MIDIToTextConverter._parseMidiFile(bytes);
+            final duration = _calculateMidiDuration(midiData);
+
+            _playlist.add(MIDIPlaylistItem(
+                fileName: file.name,
+                filePath: file.path!,
+                duration: duration,
+            ));
+        }
+      }
+      setState(() {});
+      _addLog('Loaded ${result.files.length} MIDI files.');
+    }
+  }
+
+  Future<void> _loadMIDIFolder() async {
+    try {
+      final directory = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: 'Select MIDI Folder',
+      );
+
+      if (directory != null) {
+        final dir = Directory(directory);
+        final files = dir.listSync().where((entity) => 
+          entity is File && 
+          (entity.path.endsWith('.mid') || entity.path.endsWith('.midi'))
+        ).toList();
+
+        for (final file in files) {
+          if (file is File) {
+            final fileName = file.path.split(Platform.pathSeparator).last;
+            final filePath = file.path;
+            
+            // Check if file already exists in playlist
+            final exists = _playlist.any((item) => item.filePath == filePath);
+            if (!exists) {
+              final bytes = await file.readAsBytes();
+              final midiData = MIDIToTextConverter._parseMidiFile(bytes);
+              final duration = _calculateMidiDuration(midiData);
+              
+              _playlist.add(MIDIPlaylistItem(
+                fileName: fileName,
+                filePath: filePath,
+                duration: duration,
+              ));
+            }
+          }
+        }
+        
+        setState(() {});
+        _addLog('Loaded ${files.length} MIDI files from folder');
+      }
+    } catch (e) {
+      _addLog('Error loading MIDI folder: $e');
+    }
+  }
+
+  Future<void> _playPlaylistItem(int index) async {
+    if (index < 0 || index >= _playlist.length) return;
+
+    _stopPlayer();
+    
+    setState(() {
+      _currentPlaylistIndex = index;
+      _isPlayerPlaying = true; // Set to true to show loading state
+      _isPlayerPaused = false;
+      _playerPosition = 0.0;
+      _playerDuration = _playlist[index].duration;
+    });
+
+    try {
+      final item = _playlist[index];
+      _addLog('Loading: ${item.fileName}');
+
+      final bytes = await File(item.filePath).readAsBytes();
+      final midiData = MIDIToTextConverter._parseMidiFile(bytes);
+      
+      _currentPlayerAudioFile = await _generateAudioFromMidiData(midiData);
+      
+      if (_currentPlayerAudioFile != null) {
+        await _audioPlayer.play(DeviceFileSource(_currentPlayerAudioFile!));
+        _addLog('Playing: ${item.fileName}');
+      } else {
+        _addLog('Error: Could not generate audio for playback.');
+        _stopPlayer();
+      }
+    } catch (e) {
+      _addLog('Error playing item: $e');
+      _stopPlayer();
+    }
+  }
+
+
+
+
+
+  void _pausePlayer() {
+    _audioPlayer.pause();
+    setState(() => _isPlayerPaused = true);
+  }
+
+  void _resumePlayer() {
+    _audioPlayer.resume();
+    setState(() => _isPlayerPaused = false);
+  }
+
+  void _stopPlayer() {
+    _audioPlayer.stop();
+    setState(() {
+      _isPlayerPlaying = false;
+      _isPlayerPaused = false;
+      _playerPosition = 0.0;
+    });
+  }
+
+  void _seekPlayer(double position) {
+    _audioPlayer.seek(Duration(milliseconds: (position * 1000).round()));
+     setState(() => _playerPosition = position);
+  }
+
+  void _removePlaylistItem(int index) {
+    if (index >= 0 && index < _playlist.length) {
+      if (index == _currentPlaylistIndex) {
+        _stopPlayerPlayback();
+      }
+      setState(() {
+        _playlist.removeAt(index);
+        if (_currentPlaylistIndex >= index) {
+          _currentPlaylistIndex--;
+        }
+      });
+    }
+  }
+
+  void _clearPlaylist() {
+    _stopPlayerPlayback();
+    setState(() {
+      _playlist.clear();
+      _currentPlaylistIndex = -1;
+    });
+  }
+
+  String _formatTime(double seconds) {
+    if (seconds.isNaN || seconds.isInfinite) return '00:00';
+    final duration = Duration(milliseconds: (seconds * 1000).round());
+    final minutes = duration.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final secs = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$minutes:$secs';
+  }
+
+  Widget _buildGeneratorTab(ThemeData theme, ColorScheme colorScheme) {
+    return Row(
+      children: [
+        // Left Panel - Editor
+        Expanded(
+          flex: 3,
+          child: Card(
+            margin: const EdgeInsets.all(20),
+            elevation: 0,
+            color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: colorScheme.outlineVariant, width: 0.5),
+            ),
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      Icon(CupertinoIcons.music_note_2, color: colorScheme.primary),
+                      const SizedBox(width: 8),
+                      Text('Musical Score', style: theme.textTheme.titleMedium),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: TextField(
+                      controller: _textController,
+                      maxLines: null,
+                      expands: true,
+                      style: const TextStyle(fontFamily: 'SF Mono', fontSize: 14, height: 1.4),
+                      decoration: const InputDecoration(border: InputBorder.none),
+                    ),
+                  ),
+                ),
+                const Divider(height: 1),
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      FilledButton(
+                        onPressed: _isGenerating ? null : _generateMIDI,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _isGenerating
+                                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                                : const Icon(CupertinoIcons.waveform),
+                            const SizedBox(width: 8),
+                            Text(_isGenerating ? 'Generating...' : 'Generate MIDI'),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      FilledButton(
+                        onPressed: (_currentMidiData == null || !_soundFontLoaded) ? null : _playMIDI,
+                        style: FilledButton.styleFrom(
+                          backgroundColor: _isPlaying ? colorScheme.error : colorScheme.primary,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _isPlaying 
+                                ? const Icon(CupertinoIcons.stop_fill)
+                                : const Icon(CupertinoIcons.play_fill),
+                            const SizedBox(width: 8),
+                            Text(_isPlaying ? 'Stop' : 'Play'),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      FilledButton.tonal(
+                        onPressed: _saveMIDI,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(CupertinoIcons.cloud_download_fill),
+                            const SizedBox(width: 8),
+                            const Text('Save'),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      FilledButton.tonal(
+                        onPressed: _importMIDI,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(CupertinoIcons.folder_fill),
+                            const SizedBox(width: 8),
+                            const Text('Import MIDI'),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        // Right Panel - Log
+        Expanded(
+          flex: 2,
+          child: Card(
+            margin: const EdgeInsets.fromLTRB(0, 20, 20, 20),
+            elevation: 0,
+            color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: colorScheme.outlineVariant, width: 0.5),
+            ),
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      const Icon(CupertinoIcons.list_bullet, color: Colors.grey),
+                      const SizedBox(width: 8),
+                      Text('Generation Log', style: theme.textTheme.titleMedium),
+                      const Spacer(),
+                      IconButton(
+                        icon: const Icon(CupertinoIcons.clear, size: 16),
+                        onPressed: () => setState(() => _logs.clear()),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: ListView.separated(
+                      controller: _logController,
+                      itemCount: _logs.length,
+                      separatorBuilder: (_, __) => Divider(color: colorScheme.outline.withValues(alpha: 0.12)),
+                      itemBuilder: (context, index) {
+                        final log = _logs[index];
+                        final isError = log.contains('Error:');
+                        return Text(
+                          log,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontFamily: 'SF Mono',
+                            color: isError ? colorScheme.error : colorScheme.onSurfaceVariant.withValues(alpha: 1.0),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPlayerTab(ThemeData theme, ColorScheme colorScheme) {
+    return Padding(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        children: [
+          // File Loading Controls
+          Card(
+            elevation: 0,
+            color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: colorScheme.outlineVariant, width: 0.5),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Icon(Icons.folder_open, color: colorScheme.primary),
+                  const SizedBox(width: 8),
+                  Text('Load MIDI Files', style: theme.textTheme.titleMedium),
+                  const Spacer(),
+                  FilledButton.tonal(
+                    onPressed: _loadMIDIFiles,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.file_open),
+                        const SizedBox(width: 8),
+                        const Text('Select Files'),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  FilledButton.tonal(
+                    onPressed: _loadMIDIFolder,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.folder),
+                        const SizedBox(width: 8),
+                        const Text('Select Folder'),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  FilledButton.tonal(
+                    onPressed: _playlist.isEmpty ? null : _clearPlaylist,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: _playlist.isEmpty ? colorScheme.surfaceContainerHighest : colorScheme.errorContainer,
+                      foregroundColor: _playlist.isEmpty ? colorScheme.onSurfaceVariant : colorScheme.onErrorContainer,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.clear_all),
+                        const SizedBox(width: 8),
+                        const Text('Clear Playlist'),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          // Playlist
+          Expanded(
+            flex: 2,
+            child: Card(
+              elevation: 0,
+              color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: BorderSide(color: colorScheme.outlineVariant, width: 0.5),
+              ),
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      children: [
+                        Icon(Icons.playlist_play, color: colorScheme.primary),
+                        const SizedBox(width: 8),
+                        Text('Playlist (${_playlist.length} items)', style: theme.textTheme.titleMedium),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: _playlist.isEmpty
+                        ? Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  Icons.music_note,
+                                  size: 64,
+                                  color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                                ),
+                                const SizedBox(height: 16),
+                                Text(
+                                  'No MIDI files loaded',
+                                  style: theme.textTheme.bodyLarge?.copyWith(
+                                    color: colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'Use the buttons above to load MIDI files',
+                                  style: theme.textTheme.bodyMedium?.copyWith(
+                                    color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )
+                        : ListView.builder(
+                            itemCount: _playlist.length,
+                            itemBuilder: (context, index) {
+                              final item = _playlist[index];
+                              final isPlaying = index == _currentPlaylistIndex && _isPlayerPlaying;
+                              final isSelected = index == _currentPlaylistIndex;
+                              
+                              return ListTile(
+                                leading: Icon(
+                                  isPlaying ? Icons.music_note : Icons.music_note_outlined,
+                                  color: isPlaying ? colorScheme.primary : colorScheme.onSurfaceVariant,
+                                ),
+                                title: Text(
+                                  item.fileName,
+                                  style: theme.textTheme.bodyMedium?.copyWith(
+                                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                                    color: isSelected ? colorScheme.primary : null,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  'Duration: ${_formatTime(item.duration)}',
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (isPlaying)
+                                      Icon(
+                                        _isPlayerPaused ? Icons.pause : Icons.play_arrow,
+                                        color: colorScheme.primary,
+                                        size: 20,
+                                      ),
+                                    const SizedBox(width: 8),
+                                    IconButton(
+                                      icon: const Icon(Icons.delete_outline, size: 20),
+                                      onPressed: () => _removePlaylistItem(index),
+                                      tooltip: 'Remove from playlist',
+                                    ),
+                                  ],
+                                ),
+                                onTap: () => _playPlaylistItem(index),
+                                selected: isSelected,
+                                selectedTileColor: colorScheme.primaryContainer.withValues(alpha: 0.3),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          // Player Controls
+          Card(
+            elevation: 0,
+            color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+              side: BorderSide(color: colorScheme.outlineVariant, width: 0.5),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  // Progress Bar
+                  Row(
+                    children: [
+                      Text(
+                        _formatTime(_playerPosition),
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontFamily: 'SF Mono',
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      Expanded(
+                        child: Slider(
+                          value: _playerPosition.clamp(0.0, _playerDuration),
+                          max: _playerDuration,
+                          onChanged: _isPlayerPlaying ? _seekPlayer : null,
+                          activeColor: colorScheme.primary,
+                          inactiveColor: colorScheme.outlineVariant,
+                        ),
+                      ),
+                      Text(
+                        _formatTime(_playerDuration),
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontFamily: 'SF Mono',
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                                        // Control Buttons
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          IconButton(
+                            onPressed: (_playlist.isNotEmpty && _currentPlaylistIndex > 0) ? () => _playPlaylistItem(_currentPlaylistIndex - 1) : null,
+                            icon: const Icon(Icons.skip_previous),
+                            iconSize: 32,
+                          ),
+                          const SizedBox(width: 16),
+                          // Main Play/Pause Button
+                          IconButton(
+                            onPressed: _playlist.isNotEmpty ? () {
+                              if (_isPlayerPlaying) {
+                                _isPlayerPaused ? _resumePlayer() : _pausePlayer();
+                              } else {
+                                // If stopped, play the current (or first) track
+                                final indexToPlay = _currentPlaylistIndex >= 0 ? _currentPlaylistIndex : 0;
+                                _playPlaylistItem(indexToPlay);
+                              }
+                            } : null,
+                            icon: Icon(
+                              _isPlayerPlaying && !_isPlayerPaused 
+                                  ? Icons.pause_circle_filled 
+                                  : Icons.play_circle_filled
+                            ),
+                            iconSize: 48,
+                            color: colorScheme.primary,
+                          ),
+                          const SizedBox(width: 16),
+                          IconButton(
+                            onPressed: (_playlist.isNotEmpty && _currentPlaylistIndex < _playlist.length - 1) ? () => _playPlaylistItem(_currentPlaylistIndex + 1) : null,
+                            icon: const Icon(Icons.skip_next),
+                            iconSize: 32,
+                          ),
+                          const SizedBox(width: 32),
+                          IconButton(
+                            onPressed: _isPlayerPlaying ? _stopPlayer : null,
+                            icon: const Icon(Icons.stop_circle),
+                            iconSize: 32,
+                          ),
+                        ],
+                      ),
+                  // Current Track Info
+                  if (_currentPlaylistIndex >= 0 && _currentPlaylistIndex < _playlist.length)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 16),
+                      child: Text(
+                        'Now Playing: ${_playlist[_currentPlaylistIndex].fileName}',
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: colorScheme.primary,
+                          fontWeight: FontWeight.w500,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   void _addLog(String message) {
@@ -1034,43 +1720,22 @@ C5+Eb5+G5+C6 95 3.0''';
   }
 
   Future<void> _playMIDI() async {
-    if (_synthesizer == null || _currentMidiData == null) {
-      _addLog('No synthesizer or MIDI data available');
-      return;
-    }
-
     if (_isPlaying) {
-      _stopPlayback();
+      _audioPlayer.stop();
+      setState(() => _isPlaying = false);
       return;
     }
 
-    setState(() => _isGenerating = true); // Use the generate spinner
-    _addLog('Generating audio for playback...');
-
-    // Generate the audio file FIRST
-    await _generateAudioFile();
-
-    setState(() {
-      _isGenerating = false;
-      if (_currentAudioFile != null) {
-        _isPlaying = true;
-        _playButtonController.forward();
-      }
-    });
-
+    if (_currentMidiData == null) {
+      _addLog('Please generate MIDI data first.');
+      return;
+    }
+    
+    _currentAudioFile = await _generateAudioFromMidiData(_currentMidiData!);
+    
     if (_currentAudioFile != null) {
-      _addLog('Starting playback...');
-      // Simply play the generated file. No more timers needed here.
       await _audioPlayer.play(DeviceFileSource(_currentAudioFile!));
-      // The audioplayers package can notify us when it's done.
-      _audioPlayer.onPlayerComplete.first.then((_) {
-        _addLog('Playback finished.');
-        if (mounted) {
-          _stopPlayback(); // Reset state when finished
-        }
-      });
-    } else {
-      _addLog('Failed to generate audio file for playback.');
+      setState(() => _isPlaying = true);
     }
   }
 
@@ -1084,144 +1749,9 @@ C5+Eb5+G5+C6 95 3.0''';
     }
   }
 
-  String _pitchToNoteName(int pitch) {
-    const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-    final octave = (pitch ~/ 12) - 1;
-    final noteName = noteNames[pitch % 12];
-    return '$noteName$octave';
-  }
 
-  Future<void> _generateAudioFile() async {
-    if (_synthesizer == null || _currentMidiData == null) return;
-    
-    try {
-      // Use the actual tempo from MIDI data
-      final actualTempo = _currentMidiData!.tempo;
-      _addLog('Using tempo: $actualTempo BPM');
-      
-      // Calculate duration using the actual tempo
-      double totalDuration = 0;
-      for (final track in _currentMidiData!.tracks) {
-        double trackDuration = track.notes.fold(0.0, (sum, note) => sum + note.duration);
-        if (trackDuration > totalDuration) {
-          totalDuration = trackDuration;
-        }
-      }
-      
-      // Add some tail time
-      totalDuration += 1.0;
-      
-      if (totalDuration <= 0) {
-        _addLog('Error: No notes to play, duration is zero.');
-        return;
-      }
 
-      _addLog('Rendering audio... Total duration: ${totalDuration.toStringAsFixed(2)}s');
 
-      // Reset synthesizer state
-      _synthesizer!.reset();
-
-          // Set up instruments
-    for (int i = 0; i < _currentMidiData!.tracks.length; i++) {
-      final track = _currentMidiData!.tracks[i];
-      print('DEBUG: Setting channel $i to program ${track.program} (${track.instrument})'); // ADD THIS
-      _synthesizer!.selectPreset(channel: i, preset: track.program);
-    }
-      
-      // Render the whole thing at once using the synthesizer directly
-      final sampleRate = _synthesizerSettings.sampleRate;
-      final totalSamples = (totalDuration * sampleRate).round();
-      final buffer = ArrayInt16.zeros(numShorts: totalSamples);
-      
-      // Create timeline of events
-      final events = <TimelineEvent>[];
-      
-      for (int trackIndex = 0; trackIndex < _currentMidiData!.tracks.length; trackIndex++) {
-        final track = _currentMidiData!.tracks[trackIndex];
-        
-        for (final note in track.notes) {
-          // Note On event - use actual start time
-          events.add(TimelineEvent(
-            time: note.startTime,
-            type: EventType.noteOn,
-            channel: trackIndex,
-            pitch: note.pitch,
-            velocity: note.velocity,
-          ));
-          
-          // Note Off event - use actual start time + duration
-          events.add(TimelineEvent(
-            time: note.startTime + note.duration,
-            type: EventType.noteOff,
-            channel: trackIndex,
-            pitch: note.pitch,
-            velocity: 0,
-          ));
-        }
-      }
-      
-      // Sort events by time
-      events.sort((a, b) => a.time.compareTo(b.time));
-      
-      // Render audio with proper timing
-      int currentSample = 0;
-      int eventIndex = 0;
-      final samplesPerBlock = 512;
-      
-      while (currentSample < totalSamples) {
-        final blockEndSample = (currentSample + samplesPerBlock).clamp(0, totalSamples);
-        final blockSamples = blockEndSample - currentSample;
-        final blockBuffer = ArrayInt16.zeros(numShorts: blockSamples);
-        
-        // Process events that should happen in this block
-        final currentTime = currentSample / sampleRate;
-        final blockEndTime = blockEndSample / sampleRate;
-        
-        while (eventIndex < events.length && events[eventIndex].time < blockEndTime) {
-          final event = events[eventIndex];
-          if (event.time >= currentTime) {
-            if (event.type == EventType.noteOn) {
-              _synthesizer!.noteOn(
-                channel: event.channel,
-                key: event.pitch,
-                velocity: event.velocity,
-              );
-            } else if (event.type == EventType.noteOff) {
-              _synthesizer!.noteOff(
-                channel: event.channel,
-                key: event.pitch,
-              );
-            }
-          }
-          eventIndex++;
-        }
-        
-        // Render this block
-        _synthesizer!.renderMonoInt16(blockBuffer);
-        
-        // Copy to main buffer
-        for (int i = 0; i < blockSamples; i++) {
-          buffer[currentSample + i] = blockBuffer[i];
-        }
-        
-        currentSample = blockEndSample;
-      }
-
-      // Save to WAV file with unique name
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final fileName = 'temp_audio_$timestamp.wav';
-      final path = (await getTemporaryDirectory()).path;
-      final file = File('$path/$fileName');
-      await file.writeAsBytes(_createWavHeader(sampleRate, totalSamples) + 
-                             _arrayInt16ToBytes(buffer, totalSamples));
-      
-      _currentAudioFile = file.path;
-      _addLog('Generated audio file: ${file.lengthSync()} bytes');
-    } catch (e, st) {
-      _addLog('Error generating audio file: $e\n$st');
-      _currentAudioFile = null;
-    }
-  }
 
   List<int> _createWavHeader(int sampleRate, int numSamples) {
     final header = <int>[];
@@ -1348,7 +1878,7 @@ C5+Eb5+G5+C6 95 3.0''';
   // Remove the old _parseMIDIFile and _convertMIDIDataToText methods
   // as they are replaced by the comprehensive MIDIToTextConverter
 
-  @override
+    @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
@@ -1369,12 +1899,18 @@ C5+Eb5+G5+C6 95 3.0''';
               children: [
                 Text('MIDI Generator', style: theme.textTheme.titleMedium),
                 const Spacer(),
-                FilledButton.tonalIcon(
+                FilledButton.tonal(
                   onPressed: _isLoadingSoundFont ? null : _selectSoundFont,
-                  icon: _isLoadingSoundFont 
-                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.music_note),
-                  label: Text(_isLoadingSoundFont ? 'Loading...' : 'Change SoundFont'),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _isLoadingSoundFont 
+                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.music_note),
+                      const SizedBox(width: 8),
+                      Text(_isLoadingSoundFont ? 'Loading...' : 'Change SoundFont'),
+                    ],
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Chip(
@@ -1388,140 +1924,52 @@ C5+Eb5+G5+C6 95 3.0''';
               ],
             ),
           ),
-          // Main Content
+          // Main Content with Tabs
           Expanded(
-            child: Row(
+            child: Column(
               children: [
-                // Left Panel - Editor
-                Expanded(
-                  flex: 3,
-                  child: Card(
-                    margin: const EdgeInsets.all(20),
-                    elevation: 0,
-                    color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      side: BorderSide(color: colorScheme.outlineVariant, width: 0.5),
-                    ),
-                    child: Column(
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Row(
-                            children: [
-                              Icon(CupertinoIcons.music_note_2, color: colorScheme.primary),
-                              const SizedBox(width: 8),
-                              Text('Musical Score', style: theme.textTheme.titleMedium),
+                // Tab Bar
+                Container(
+                  height: 50,
+                  decoration: BoxDecoration(
+                    color: colorScheme.surface,
+                    border: Border(bottom: BorderSide(color: colorScheme.outlineVariant, width: 0.5)),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: DefaultTabController(
+                          length: 2,
+                          child: TabBar(
+                            onTap: (index) {
+                              setState(() => _currentTabIndex = index);
+                            },
+                            tabs: const [
+                              Tab(
+                                icon: Icon(Icons.edit_note),
+                                text: 'MIDI Generator',
+                              ),
+                              Tab(
+                                icon: Icon(Icons.playlist_play),
+                                text: 'MIDI Player',
+                              ),
                             ],
                           ),
                         ),
-                        const Divider(height: 1),
-                        Expanded(
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: TextField(
-                              controller: _textController,
-                              maxLines: null,
-                              expands: true,
-                              style: const TextStyle(fontFamily: 'SF Mono', fontSize: 14, height: 1.4),
-                              decoration: const InputDecoration(border: InputBorder.none),
-                            ),
-                          ),
-                        ),
-                        const Divider(height: 1),
-                        Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Row(
-                            children: [
-                              FilledButton.icon(
-                                onPressed: _isGenerating ? null : _generateMIDI,
-                                icon: _isGenerating
-                                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                                    : const Icon(CupertinoIcons.waveform),
-                                label: Text(_isGenerating ? 'Generating...' : 'Generate MIDI'),
-                              ),
-                              const SizedBox(width: 12),
-                              FilledButton.icon(
-                                onPressed: (_currentMidiData == null || !_soundFontLoaded) ? null : _playMIDI,
-                                icon: _isPlaying 
-                                    ? const Icon(CupertinoIcons.stop_fill)
-                                    : const Icon(CupertinoIcons.play_fill),
-                                label: Text(_isPlaying ? 'Stop' : 'Play'),
-                                style: FilledButton.styleFrom(
-                                  backgroundColor: _isPlaying ? colorScheme.error : colorScheme.primary,
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                                                             FilledButton.tonalIcon(
-                                 onPressed: _saveMIDI,
-                                 icon: const Icon(CupertinoIcons.cloud_download_fill),
-                                 label: const Text('Save'),
-                               ),
-                               const SizedBox(width: 12),
-                               FilledButton.tonalIcon(
-                                 onPressed: _importMIDI,
-                                 icon: const Icon(CupertinoIcons.folder_fill),
-                                 label: const Text('Import MIDI'),
-                               ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
-                // Right Panel - Log
+                // Tab Content
                 Expanded(
-                  flex: 2,
-                  child: Card(
-                    margin: const EdgeInsets.fromLTRB(0, 20, 20, 20),
-                    elevation: 0,
-                    color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      side: BorderSide(color: colorScheme.outlineVariant, width: 0.5),
-                    ),
-                    child: Column(
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Row(
-                            children: [
-                              const Icon(CupertinoIcons.list_bullet, color: Colors.grey),
-                              const SizedBox(width: 8),
-                              Text('Generation Log', style: theme.textTheme.titleMedium),
-                              const Spacer(),
-                              IconButton(
-                                icon: const Icon(CupertinoIcons.clear, size: 16),
-                                onPressed: () => setState(() => _logs.clear()),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const Divider(height: 1),
-                        Expanded(
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: ListView.separated(
-                              controller: _logController,
-                              itemCount: _logs.length,
-                              separatorBuilder: (_, __) => Divider(color: colorScheme.outline.withValues(alpha: 0.12)),
-                              itemBuilder: (context, index) {
-                                final log = _logs[index];
-                                final isError = log.contains('Error:');
-                                return Text(
-                                  log,
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    fontFamily: 'SF Mono',
-                                    color: isError ? colorScheme.error : colorScheme.onSurfaceVariant.withValues(alpha: 1.0),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
+                  child: IndexedStack(
+                    index: _currentTabIndex,
+                    children: [
+                      // MIDI Generator Tab
+                      _buildGeneratorTab(theme, colorScheme),
+                      // MIDI Player Tab
+                      _buildPlayerTab(theme, colorScheme),
+                    ],
                   ),
                 ),
               ],
@@ -2046,6 +2494,19 @@ class _MidiEvent {
   final int status;
   final List<int> data;
   _MidiEvent(this.ticks, this.status, this.data);
+}
+
+// MIDI Playlist Item Class
+class MIDIPlaylistItem {
+  final String fileName;
+  final String filePath;
+  final double duration; // Changed to double for accuracy
+
+  MIDIPlaylistItem({
+    required this.fileName,
+    required this.filePath,
+    required this.duration,
+  });
 }
 
 enum EventType { noteOn, noteOff }
