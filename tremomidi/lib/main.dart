@@ -320,19 +320,22 @@ class MIDIToTextConverter {
       buffer.writeln('instrument: ${track.instrument}');
       buffer.writeln();
       
-      // Group notes by start time to create chords
+      // Group notes by EXACT start time to create chords
       final noteGroups = <double, List<MIDINote>>{};
-      double currentTime = 0;
       
       for (final note in track.notes) {
-        noteGroups.putIfAbsent(currentTime, () => []);
-        noteGroups[currentTime]!.add(note);
-        currentTime += note.duration;
+        // Use note's actual startTime instead of calculating cumulative time
+        final startTime = note.startTime;
+        noteGroups.putIfAbsent(startTime, () => []);
+        noteGroups[startTime]!.add(note);
       }
       
+      // Sort by start time
+      final sortedTimes = noteGroups.keys.toList()..sort();
+      
       // Output grouped notes as chords or single notes
-      for (final entry in noteGroups.entries) {
-        final notes = entry.value;
+      for (final startTime in sortedTimes) {
+        final notes = noteGroups[startTime]!;
         if (notes.length == 1) {
           // Single note
           final note = notes.first;
@@ -340,26 +343,22 @@ class MIDIToTextConverter {
           buffer.writeln('$noteName ${note.velocity} ${note.duration.toStringAsFixed(2)}');
         } else {
           // Chord - group notes with same velocity and duration
-          final velocityGroups = <int, List<MIDINote>>{};
+          final chordGroups = <String, List<MIDINote>>{};
           for (final note in notes) {
-            velocityGroups.putIfAbsent(note.velocity, () => []);
-            velocityGroups[note.velocity]!.add(note);
+            final key = '${note.velocity}_${note.duration.toStringAsFixed(2)}';
+            chordGroups.putIfAbsent(key, () => []);
+            chordGroups[key]!.add(note);
           }
           
-          for (final velocityEntry in velocityGroups.entries) {
-            final chordNotes = velocityEntry.value;
-            final durationGroups = <double, List<MIDINote>>{};
-            for (final note in chordNotes) {
-              durationGroups.putIfAbsent(note.duration, () => []);
-              durationGroups[note.duration]!.add(note);
-            }
-            
-            for (final durationEntry in durationGroups.entries) {
-              final finalChordNotes = durationEntry.value;
-              final noteNames = finalChordNotes.map((n) => _pitchToNoteName(n.pitch)).toList();
-              final chordString = noteNames.join('+');
-              buffer.writeln('$chordString ${velocityEntry.key} ${durationEntry.key.toStringAsFixed(2)}');
-            }
+          for (final entry in chordGroups.entries) {
+            final chordNotes = entry.value;
+            final noteNames = chordNotes.map((n) => _pitchToNoteName(n.pitch)).toList();
+            // Sort note names for consistent chord representation
+            noteNames.sort();
+            final chordString = noteNames.join('+');
+            final velocity = chordNotes.first.velocity;
+            final duration = chordNotes.first.duration;
+            buffer.writeln('$chordString $velocity ${duration.toStringAsFixed(2)}');
           }
         }
       }
@@ -609,19 +608,22 @@ class MIDIToTextConverter {
     List<MIDINote> notes, 
     int ticksPerBeat, 
     int tempo,
-    int program, // Add program parameter
+    int program,
   ) {
     final activeNote = activeNotes.remove(noteKey);
     if (activeNote != null) {
       final durationInTicks = currentTime - activeNote.startTime;
-      if (durationInTicks > 0) { // Only add notes with positive duration
+      if (durationInTicks > 0) {
         final durationInBeats = durationInTicks / ticksPerBeat.toDouble();
         final durationInSeconds = durationInBeats * (60.0 / tempo);
+        final startTimeInBeats = activeNote.startTime / ticksPerBeat.toDouble();
+        final startTimeInSeconds = startTimeInBeats * (60.0 / tempo);
+        
         notes.add(MIDINote(
           pitch: notePitch,
           velocity: activeNote.velocity,
-          startTime: activeNote.startTime / ticksPerBeat * (60.0/tempo),
-          duration: durationInSeconds.clamp(0.01, double.infinity), // Minimum duration
+          startTime: startTimeInSeconds, // Use absolute start time
+          duration: durationInSeconds.clamp(0.01, double.infinity),
         ));
       }
     }
@@ -2438,7 +2440,6 @@ class MIDITextParser {
     for (final line in lines) {
       final trimmed = line.trim();
       
-      // Skip comment lines that start with *
       if (trimmed.startsWith('*')) {
         continue;
       }
@@ -2447,7 +2448,6 @@ class MIDITextParser {
         tempo = int.tryParse(trimmed.substring(6).trim()) ?? 120;
       } else if (trimmed.startsWith('instrument:')) {
         currentInstrument = trimmed.substring(11).trim();
-        print('DEBUG: Setting instrument to: $currentInstrument'); // ADD THIS
         instrumentNotes.putIfAbsent(currentInstrument, () => []);
       } else {
         final parts = trimmed.split(RegExp(r'\s+'));
@@ -2455,26 +2455,18 @@ class MIDITextParser {
           try {
             final notePart = parts[0];
             final velocity = int.parse(parts[1]);
-            final durationInBeats = double.parse(parts[2]);
-            // Convert from beats to seconds using tempo
-            final durationInSeconds = durationInBeats * (60.0 / tempo);
+            final durationInSeconds = double.parse(parts[2]); // Keep as seconds
             
-            // Parse chord or single note
             List<int> pitches = [];
             if (notePart.contains('+')) {
-              // Chord: C4+E4+G4
               final noteNames = notePart.split('+');
-              print('DEBUG: Parsing chord: $notePart -> ${noteNames.length} notes');
               for (final noteName in noteNames) {
                 final pitch = _parseNoteName(noteName.trim());
                 pitches.add(pitch);
-                print('DEBUG: Note $noteName -> pitch $pitch');
               }
             } else {
-              // Single note: C4
               final pitch = _parseNoteName(notePart);
               pitches.add(pitch);
-              print('DEBUG: Single note $notePart -> pitch $pitch');
             }
             
             instrumentNotes.putIfAbsent(currentInstrument, () => []);
@@ -2490,14 +2482,12 @@ class MIDITextParser {
 
     final tracks = instrumentNotes.entries.map((entry) {
       final program = instrumentMap[entry.key] ?? 0;
-      print('DEBUG: Instrument "${entry.key}" -> Program $program'); // ADD THIS
       
-      // Convert ChordOrNote to MIDINote with proper timing
       final midiNotes = <MIDINote>[];
       double currentTime = 0.0;
       
       for (final chordOrNote in entry.value) {
-        // All notes in a chord start at the same time
+        // All notes in a chord share the same start time
         for (final pitch in chordOrNote.pitches) {
           midiNotes.add(MIDINote(
             pitch: pitch,
@@ -2506,7 +2496,7 @@ class MIDITextParser {
             duration: chordOrNote.duration,
           ));
         }
-        // Move to next time position after the chord duration
+        // Advance time only once per chord/note entry
         currentTime += chordOrNote.duration;
       }
       
